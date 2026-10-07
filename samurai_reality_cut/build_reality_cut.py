@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from mathutils import Matrix, Vector, Quaternion, Euler
 
 FPS = 60
-DUR = 2.9
+DUR = 5.0
 N = int(round(DUR * FPS)) + 1
 BLADE = 66.0          # nagasa (cm)
 TSUKA = 27.0
@@ -57,6 +57,28 @@ def lerp(a, b, f): return a + (b - a) * f
 
 def smooth(x):
     x = max(0.0, min(1.0, x)); return x * x * (3 - 2 * x)
+
+
+# ---- time warp: the choreography below is authored on a 2.9 s clock; KNOTS stretch it to the final 5 s clip
+# (slow breathing calm, slow grip + draw, a long coil before the cut, a longer hold and sheathe) while the slash itself
+# keeps real-time speed.  (authored_time, final_time)
+KNOTS = [(0, 0.0), (0.35, 0.9), (0.70, 1.55), (1.15, 2.45), (1.45, 3.05), (1.52, 3.35), (1.69, 3.52), (1.76, 3.7),
+         (2.0, 4.0), (2.3, 4.4), (2.7, 4.8), (2.9, 5.0)]
+
+
+def fwd(t):
+    return pchip([(a, v) for a, v in KNOTS], t)
+
+
+def inv(tn):
+    lo, hi = 0.0, 2.9
+    if tn <= 0: return 0.0
+    if tn >= 5.0: return 2.9
+    for _ in range(40):
+        mid = 0.5 * (lo + hi)
+        if fwd(mid) < tn: lo = mid
+        else: hi = mid
+    return 0.5 * (lo + hi)
 
 
 def pchip(keys, t):
@@ -233,6 +255,19 @@ def make_materials():
     }
 
 
+def lobed_ring(z, r, lobes=4, depth=0.5, n=40):
+    return [((r + depth * math.cos(lobes * 2 * math.pi * i / n)) * math.cos(2 * math.pi * i / n),
+             (r + depth * math.cos(lobes * 2 * math.pi * i / n)) * 0.93 * math.sin(2 * math.pi * i / n), z) for i in range(n)]
+
+
+def blob(bm, c, size, mat_idx):
+    res = bmesh.ops.create_cube(bm, size=1.0)
+    vs = res['verts']
+    for v in vs:
+        v.co.x = v.co.x * size[0] + c[0]; v.co.y = v.co.y * size[1] + c[1]; v.co.z = v.co.z * size[2] + c[2]
+    for f in {f for v in vs for f in v.link_faces}: f.material_index = mat_idx
+
+
 def loft(bm, rings, mat_idx, cap0=True, cap1=True):
     vr = [[bm.verts.new(p) for p in ring] for ring in rings]
     n = len(vr[0])
@@ -270,7 +305,10 @@ def build_katana(rig):
         rings.append(ring)
     loft(bm, rings, 0)
     loft(bm, [ellipse_ring(0.0, 2.4, 1.0, 10), ellipse_ring(2.6, 2.2, 0.9, 10)], 2)                 # habaki
-    loft(bm, [ellipse_ring(-0.6, 4.3, 3.9, 20), ellipse_ring(0.0, 4.3, 3.9, 20), ellipse_ring(0.5, 4.2, 3.8, 20)], 1)   # tsuba
+    loft(bm, [lobed_ring(-0.6, 3.8), lobed_ring(0.0, 3.9), lobed_ring(0.5, 3.8)], 1)                                      # tsuba (mokko lobes)
+    loft(bm, [ellipse_ring(0.5, 3.0, 2.7, 24), ellipse_ring(0.75, 2.9, 2.6, 24)], 2)                                       # gold rim ring
+    loft(bm, [ellipse_ring(-0.6, 2.7, 2.3, 20), ellipse_ring(-0.95, 2.6, 2.2, 20)], 2)                                     # seppa
+    loft(bm, [ellipse_ring(-0.95, 2.35, 1.85, 20), ellipse_ring(-4.2, 2.25, 1.75, 20)], 2)                                 # fuchi collar
     rings = []
     L = TSUKA
     for i in range(0, 81):
@@ -280,6 +318,8 @@ def build_katana(rig):
         rings.append(ellipse_ring(z - 0.6, (1.75 + bump) * bell, (1.35 + bump) * bell, 20))
     loft(bm, rings, 3)                                                                              # tsuka (ito wrap)
     loft(bm, [ellipse_ring(-L - 0.6, 1.9, 1.5, 12), ellipse_ring(-L - 1.6, 1.9, 1.5, 12), ellipse_ring(-L - 2.1, 1.0, 0.8, 12)], 2)  # kashira
+    blob(bm, (1.9, 0.0, -11.0), (0.5, 0.9, 2.6), 2); blob(bm, (-1.9, 0.0, -17.0), (0.5, 0.9, 2.6), 2)           # menuki
+    for zz in (-8.5, -14.0, -19.5, -25.0): loft(bm, [ellipse_ring(zz, 1.95, 1.5, 20), ellipse_ring(zz - 0.5, 1.95, 1.5, 20)], 2)  # ito bands
     sword = bpy.data.meshes.new('Katana'); bm.to_mesh(sword); bm.free()
     # ---- saya
     bm = bmesh.new()
@@ -294,6 +334,8 @@ def build_katana(rig):
     loft(bm, rings, 4)
     loft(bm, [ellipse_ring(0.8, 2.5, 1.9, 14), ellipse_ring(2.6, 2.5, 1.9, 14)], 2)                   # koiguchi collar
     loft(bm, [ellipse_ring(SL - 0.5, 0.65, 0.5, 8), ellipse_ring(SL + 0.9, 0.5, 0.4, 8)], 2)            # kojiri cap
+    for zz in (14.0, 30.0, 46.0): loft(bm, [ellipse_ring(zz, 2.3 - 0.0005 * zz, 1.75, 24), ellipse_ring(zz + 1.1, 2.3 - 0.0005 * zz, 1.75, 24)], 2)   # gold bands
+    blob(bm, (2.4, 0.0, 8.0), (1.6, 1.2, 2.4), 2)                                                                            # kurikata knob
     saya = bpy.data.meshes.new('Saya'); bm.to_mesh(saya); bm.free()
 
     # ---- armature bones
@@ -357,7 +399,7 @@ class Solver:
         ch = dict(yaw=g('chYaw', L['ch']), pitch=g('chPitch', L['ch']), roll=g('chRoll', L['ch']))
         hd = dict(yaw=g('headYaw', L['head']), pitch=g('headPitch', L['head']))
         # breathing / idle life
-        br = math.sin(t * 2 * math.pi / 3.0)
+        br = math.sin(fwd(min(max(t, 0.0), 2.9)) * 2 * math.pi / 3.4)
         ch['pitch'] += 0.7 * br; hip['pos'] = hip['pos'] + Vector((0, 0.25 * br, 0))
         return hip, sp, ch, hd
 
@@ -374,6 +416,7 @@ class Solver:
         return P, M
 
     def solve(self, t, ctx_cache, opt=None):
+        t = inv(t)
         opt = opt or {}
         sw = opt.get('swiv', (0.0, 0.0)); twv = opt.get('twist', (0.0, 0.0)); lfv = opt.get('lift', (0.0, 0.0))
         shf = opt.get('shf', (SH_FOLLOW, SH_FOLLOW))
@@ -747,10 +790,10 @@ def anat_pen(m, swiv):
 
 def opt_setup(quick):
     SW = (-50, -30, -15, 0, 15, 30, 45, 60)
-    TW = (-135, -105, -75, -50, -25, 0, 25, 50, 75, 105, 135)
+    TW = (-120, -90, -60, -30, 0, 30, 60, 90, 120)
     LF = (0.0, 1.0)
     SF = (0.15, 0.5)
-    step = 3
+    step = 4
     if quick:
         SW = (-45, -20, 0, 20, 45); TW = (-120, -80, -40, 0, 40, 80, 120); SF = (0.15, 0.55); step = 4
     import itertools
@@ -856,6 +899,61 @@ def report_anatomy(solver, swt):
     print('WORST  (min elbow interior, max pron, max wrist twist, max wrist dev, max roll):', worst)
 
 
+frames_orig = None
+
+
+def secondary_motion(rig, frames, amp=0.22, clamp=0.30):
+    """damped-pendulum follow-through for the hanging skirt panels (hujia*) and belt cords (rope*): driven by the
+    acceleration of each chain root, so they lag the cut, swing on the stop and settle."""
+    rh, rr = rig.rh, rig.rr
+    chain = [b for b in rig.order if ('hujia' in b or b.startswith('rope'))]
+    roots = [b for b in chain if rig.parent[b] not in chain]
+    members = {}
+    for r_ in roots:
+        members[r_] = [b for b in chain if b == r_ or _is_desc(rig, b, r_)]
+    dt = 1.0 / FPS
+    n = len(frames)
+    ang = {r_: [(0.0, 0.0)] * n for r_ in roots}
+    for r_ in roots:
+        w0 = 2 * math.pi * (2.3 if 'rope' not in r_ else 3.2); zeta = 0.30
+        p = [Vector(f[0][r_]) for f in frames]
+        fx = fz = vx = vz = 0.0
+        out = []
+        for i in range(n):
+            a = (p[min(i + 1, n - 1)] - 2 * p[i] + p[max(i - 1, 0)]) / (dt * dt) if 0 < i < n - 1 else Vector((0, 0, 0))
+            tz = max(-clamp, min(clamp, -a.x / 981.0 * amp * 4))      # rotation about Z -> swing in X
+            tx = max(-clamp, min(clamp, a.z / 981.0 * amp * 4))       # rotation about X -> swing in Z
+            for _ in range(2):                                         # 2 substeps
+                h = dt / 2
+                vz += (-w0 * w0 * (fz - tz) - 2 * zeta * w0 * vz) * h; fz += vz * h
+                vx += (-w0 * w0 * (fx - tx) - 2 * zeta * w0 * vx) * h; fx += vx * h
+            fz = max(-clamp, min(clamp, fz)); fx = max(-clamp, min(clamp, fx))
+            out.append((fx, fz))
+        ang[r_] = out
+    for i, (POS, DEL) in enumerate(frames):
+        for b in rig.order:
+            if b not in chain: continue
+            par = rig.parent[b]
+            root = next(r_ for r_ in roots if b in members[r_])
+            depth = 0 if b == root else 1
+            fx, fz = ang[root][i]
+            k = 1.0 if depth == 0 else 0.5
+            R = Matrix.Rotation(fx * k, 3, 'X') @ Matrix.Rotation(fz * k, 3, 'Z')
+            # local delta of b relative to parent under the original pose
+            oldp = frames_orig[i][1][par]; oldb = frames_orig[i][1][b]
+            L = oldp.inverted() @ oldb
+            DEL[b] = DEL[par] @ L @ R
+            POS[b] = POS[par] + DEL[par] @ (rh[b] - rh[par])
+
+
+def _is_desc(rig, b, anc):
+    p = rig.parent[b]
+    while p:
+        if p == anc: return True
+        p = rig.parent[p]
+    return False
+
+
 def bake(rig, solver, katana_objs, swt=None):
     arm = rig.obj
     scene = bpy.context.scene
@@ -871,6 +969,9 @@ def bake(rig, solver, katana_objs, swt=None):
         POS['saya_root'] = Ms; DEL['saya_root'] = Fs
         # saya frame: edge-up basis already in Fs via sword_frame; placed at the mouth
         frames.append((POS, DEL))
+    global frames_orig
+    frames_orig = [(dict(P), dict(D)) for P, D in frames]
+    secondary_motion(rig, frames)
     allb = rig.order + ['katana_root', 'saya_root']
     parent = dict(rig.parent); parent['katana_root'] = None; parent['saya_root'] = None
     rest = dict(rig.rest)

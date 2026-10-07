@@ -73,7 +73,7 @@ class Raster:
     pass
 
 
-def rasterize(obj, arm, size, region_of_face):
+def rasterize(obj, arm, size, region_of_face, bone_of_face=None):
     """returns Raster with pos(cm, armature space), nor, curv, reg, uv, mask arrays at size x size"""
     me = obj.data
     me.calc_loop_triangles()
@@ -90,7 +90,7 @@ def rasterize(obj, arm, size, region_of_face):
     R = Raster()
     R.pos = np.zeros((H, W, 3), np.float32); R.nor = np.zeros((H, W, 3), np.float32) + np.array([0, 1, 0], np.float32)
     R.curv = np.zeros((H, W), np.float32); R.reg = np.zeros((H, W), np.int16)
-    R.mask = np.zeros((H, W), bool); R.uv = np.zeros((H, W, 2), np.float32)
+    R.mask = np.zeros((H, W), bool); R.uv = np.zeros((H, W, 2), np.float32); R.bone = np.full((H, W), -1, np.int16)
     # per vertex curvature: 1 - mean dot of normal with neighbour face normals
     fn = np.array([tuple(nm @ p.normal) for p in me.polygons], np.float32)
     acc = np.zeros(len(me.vertices), np.float32); cnt = np.zeros(len(me.vertices), np.float32)
@@ -121,6 +121,7 @@ def rasterize(obj, arm, size, region_of_face):
         R.nor[yy, xx] = n
         R.curv[yy, xx] = (b[..., 0] * vcurv[list(vs)][None]).sum(1)
         R.reg[yy, xx] = region_of_face(t.polygon_index)
+        if bone_of_face is not None: R.bone[yy, xx] = bone_of_face(t.polygon_index)
         R.mask[yy, xx] = True
         R.uv[yy, xx] = np.stack([(xx + 0.5) / W, 1 - (yy + 0.5) / H], 1)
     return R
@@ -158,103 +159,149 @@ def _out(alb, rough, metal, height, ao=None):
                 ao=np.ones_like(rough) if ao is None else np.clip(ao, 0, 1))
 
 
-def paint_armor(R, regs, plate_scale=3.4):
-    """lacquered plates with crimson odoshi lacing; used for armo + Protective_L plates."""
-    p = R.pos; u, v = R.uv[..., 0], R.uv[..., 1]
-    big = fbm(p * 0.06, 4, 3); fine = fbm(p * 0.9, 3, 5); scr = np.abs(fbm(p * np.array([4.0, 0.4, 4.0], np.float32), 3, 9) - 0.5)
-    lac = mix(col(0.035, 0.04, 0.075), col(0.075, 0.09, 0.15), big)           # indigo-black lacquer
-    lac = lac * (0.88 + 0.24 * fine[..., None])
-    # plate rows (horizontal gaps) and vertical lacing cords follow the UV grid of the atlas islands
-    rowf = (v * 38.0) % 1.0
-    groove = smoothstep(0.0, 0.06, rowf) * smoothstep(0.0, 0.06, 1 - rowf)
-    cf = (u * (80.0 * plate_scale / 3.4)) % 1.0
-    cord = smoothstep(0.26, 0.20, np.abs(cf - 0.5))
-    braid = 0.5 + 0.5 * np.sin(v * 900.0 + np.sin(u * 40.0) * 2.0)
-    crimson = mix(col(0.22, 0.012, 0.02), col(0.46, 0.05, 0.05), braid * 0.65 + 0.35 * fine)
-    lace = cord * groove * (0.82 + 0.18 * fine)
-    alb = mix(lac, crimson, lace * 0.92)
-    rough = 0.30 + 0.22 * fine - 0.05 * big
-    metal = np.full_like(rough, 0.18)
-    height = groove * 0.5 + lace * 0.45 * (0.55 + 0.45 * braid)
-    rough = np.where(lace > 0.5, 0.82, rough)
-    metal = np.where(lace > 0.5, 0.0, metal)
-    # worn edges -> gold/steel trim
-    edge = smoothstep(0.10, 0.30, R.curv) * (0.5 + 0.5 * fbm(p * 1.8, 3, 11))
-    gold = mix(col(0.62, 0.45, 0.16), col(0.38, 0.27, 0.09), fine)
-    alb = mix(alb, gold, edge)
-    rough = np.where(edge > 0.4, 0.28 + 0.25 * fine, rough)
-    metal = np.where(edge > 0.4, 1.0, metal)
-    height = height + edge * 0.35
-    # scratches
-    sc = smoothstep(0.012, 0.0, scr) * 0.25
-    alb = alb * (1 + sc[..., None] * 0.9); rough = rough - sc * 0.1
-    ao = 0.6 + 0.4 * groove
+_BT = {}
+
+
+def set_bone_table(arm):
+    names = [b.name for b in arm.data.bones]
+    head = np.zeros((len(names) + 1, 3), np.float32); ax = np.zeros((len(names) + 1, 3), np.float32); ax[:, 1] = 1
+    for i, b in enumerate(arm.data.bones):
+        h = np.array(b.head_local, np.float32); t = np.array(b.tail_local, np.float32)
+        d = t - h; n = np.linalg.norm(d)
+        head[i] = h; ax[i] = d / n if n > 1e-4 else np.array([0, 1, 0], np.float32)
+    for i, b in enumerate(arm.data.bones):
+        if b.name in ('HIP', 'spine', 'chest', 'neck'):
+            head[i] = np.array([-5.8, 0.0, 3.0], np.float32); ax[i] = np.array([0, 1, 0], np.float32)
+    ref = np.where(np.abs(ax[:, 2:3]) < 0.9, np.array([0, 0, 1], np.float32), np.array([1, 0, 0], np.float32))
+    e1 = np.cross(ax, ref); e1 /= np.linalg.norm(e1, axis=1, keepdims=True)
+    e2 = np.cross(ax, e1)
+    _BT.update(names=names, head=head, ax=ax, e1=e1, e2=e2)
+
+
+def cyl(R):
+    """bone-local cylindrical coordinates per pixel: s (cm along the bone), arc (cm around it), r (radius)."""
+    idx = np.where(R.bone < 0, len(_BT['names']), R.bone).astype(np.int64)
+    v = R.pos - _BT['head'][idx]
+    ax = _BT['ax'][idx]
+    s_ = (v * ax).sum(-1)
+    rv = v - s_[..., None] * ax
+    r = np.linalg.norm(rv, axis=-1)
+    th = np.arctan2((rv * _BT['e2'][idx]).sum(-1), (rv * _BT['e1'][idx]).sum(-1))
+    return s_, th * np.maximum(r, 3.0), r
+
+
+def inner_dist(mask, maxd):
+    d = np.zeros(mask.shape, np.float32); cur = mask.copy()
+    for _ in range(maxd):
+        d += cur
+        n = cur.copy()
+        for dy, dx in ((1, 0), (-1, 0), (0, 1), (0, -1)): n &= np.roll(cur, (dy, dx), (0, 1))
+        cur = n
+    return d
+
+
+GOLD = col(0.80, 0.60, 0.22)
+CRIMSON = col(0.42, 0.03, 0.04)
+LACQUER = col(0.028, 0.028, 0.034)
+INDIGO = col(0.035, 0.05, 0.12)
+LEATHER = col(0.20, 0.11, 0.06)
+
+
+def paint_armor(R, regs, row=3.0, cord=1.5, trim_px=None, lace_amt=1.0):
+    """black-lacquer plates (kuro urushi) laced with crimson silk (aka-ito odoshi), gold fittings on every plate border.
+    rows / cords follow the bone-local axes so the lacing runs vertically on skirts, torso and sleeves alike."""
+    p = R.pos; size = R.mask.shape[0]
+    s_, arc, r = cyl(R)
+    fine = fbm(p * 0.9, 3, 5); big = fbm(p * 0.07, 3, 3); micro = fbm(p * 5.0, 2, 6)
+    base = mix(LACQUER, col(0.06, 0.065, 0.085), big) * (0.85 + 0.3 * fine[..., None])
+    rf = (s_ / row) % 1.0
+    gap = smoothstep(0.0, 0.07, rf) * smoothstep(0.0, 0.07, 1 - rf)
+    cf = (arc / cord) % 1.0
+    cd = np.abs(cf - 0.5)
+    lace_mask = smoothstep(0.27, 0.20, cd)
+    silk = 0.5 + 0.5 * np.sin(s_ * 9.0 + np.sin(arc * 2.0) * 1.5)
+    crim = mix(col(0.26, 0.014, 0.022), col(0.52, 0.05, 0.055), silk * 0.6 + 0.4 * fine)
+    # cords pass over the plate; the plate gap line shows the cord as continuous vertical silk
+    lace = lace_mask * (0.55 + 0.45 * gap) * lace_amt
+    alb = mix(base, crim, lace)
+    rough = 0.26 + 0.2 * fine; metal = np.full_like(rough, 0.2)
+    rough = np.where(lace > 0.45, 0.78, rough); metal = np.where(lace > 0.45, 0.0, metal)
+    height = gap * 0.45 + lace * (0.35 + 0.25 * silk)
+    # gold rivets where lacing crosses the plate edge
+    rv = (cd < 0.09) & (rf < 0.12)
+    alb = np.where(rv[..., None], GOLD, alb); metal = np.where(rv, 1.0, metal); rough = np.where(rv, 0.3, rough)
+    # gold fittings along island borders
+    w = trim_px or max(1, size // 700)
+    d = inner_dist(R.mask, w + 2)
+    trim = (d > 0) & (d <= w) & R.mask
+    edge = smoothstep(0.25, 0.6, R.curv) * (0.4 + 0.6 * fbm(p * 1.6, 3, 11))
+    gold = mix(GOLD, GOLD * 0.55, fine)
+    tm = np.maximum(trim.astype(np.float32), edge * 0.5)
+    alb = mix(alb, gold, tm); metal = np.where(tm > 0.4, 1.0, metal); rough = np.where(tm > 0.4, 0.28 + 0.2 * micro, rough)
+    height = height + tm * 0.5
+    # lacquer wear: fine scratches
+    scr = np.abs(fbm(p * np.array([5.0, 0.6, 5.0], np.float32), 3, 9) - 0.5)
+    sc = smoothstep(0.01, 0.0, scr) * 0.3
+    alb = alb * (1 + sc[..., None]); rough = rough - sc * 0.12
+    ao = 0.6 + 0.4 * gap
     return alb, rough, metal, height, ao
 
 
 def paint_armo(R, rid):
-    alb, rough, metal, height, ao = paint_armor(R, rid)
+    alb, rough, metal, height, ao = paint_armor(R, rid, row=3.2, cord=1.6)
     p = R.pos
-    # rope (tassels / belt cords) in cream
     rope = (R.reg == rid['rope'])
-    cord = 0.5 + 0.5 * np.sin(p[..., 1] * 9 + p[..., 0] * 4 + p[..., 2] * 4)
-    alb = np.where(rope[..., None], mix(col(0.78, 0.70, 0.52), col(0.55, 0.47, 0.32), cord), alb)
-    rough = np.where(rope, 0.9, rough); metal = np.where(rope, 0.0, metal)
-    height = np.where(rope, cord * 0.7, height)
-    # chest/back: slightly warmer lacquer to read as the cuirass
-    cu = (R.reg == rid['body'])
-    alb = np.where(cu[..., None], alb * np.array([1.18, 1.0, 0.92], np.float32), alb)
+    cord = 0.5 + 0.5 * np.sin(p[..., 1] * 10 + p[..., 0] * 5 + p[..., 2] * 5)
+    cream = mix(col(0.74, 0.66, 0.46), col(0.45, 0.38, 0.24), cord)
+    alb = np.where(rope[..., None], cream, alb)
+    rough = np.where(rope, 0.9, rough); metal = np.where(rope, 0.0, metal); height = np.where(rope, cord * 0.7, height)
     return _out(alb, rough, metal, height, ao)
 
 
 def paint_neiyi(R, rid):
+    """indigo hemp-cloth under-garment with a faint asanoha (hemp-leaf) lattice and woven grain"""
     p = R.pos
-    fine = fbm(p * 0.7, 3, 21)
-    big = fbm(p * 0.05, 3, 22)
-    # twill weave from object-space coordinates (diagonal)
-    u = (p[..., 0] + p[..., 2]) * 5.0; v = (p[..., 1] + (p[..., 0] - p[..., 2]) * 0.0) * 5.0
-    weave = 0.5 + 0.25 * np.sin(u * 3.2) * np.sin(v * 3.2) + 0.25 * np.sin((u + v) * 1.6)
-    base = mix(col(0.045, 0.06, 0.14), col(0.09, 0.11, 0.21), big)
-    alb = base * (0.8 + 0.4 * weave[..., None]) * (0.9 + 0.2 * fine[..., None])
-    # pale kasuri flecks
-    fleck = smoothstep(0.78, 0.9, fbm(p * 2.4, 2, 23))
-    alb = mix(alb, col(0.30, 0.34, 0.46), fleck * 0.35)
-    rough = 0.88 - 0.1 * weave
-    metal = np.zeros_like(rough)
-    return _out(alb, rough, metal, weave * 0.8 + fine * 0.3, 0.8 + 0.2 * weave)
+    s_, arc, r = cyl(R)
+    fine = fbm(p * 0.8, 3, 21); big = fbm(p * 0.06, 3, 22)
+    u = s_ / 1.9; v = arc / 1.9
+    l1 = np.abs(((u + v) % 1.0) - 0.5); l2 = np.abs(((u - v) % 1.0) - 0.5); l3 = np.abs((u % 1.0) - 0.5)
+    lat = smoothstep(0.07, 0.0, np.minimum(l1, l2))
+    weave = 0.5 + 0.25 * np.sin(s_ * 14) * np.sin(arc * 14) + 0.25 * np.sin((s_ + arc) * 7)
+    base = mix(INDIGO, col(0.07, 0.09, 0.19), big) * (0.82 + 0.36 * weave[..., None]) * (0.92 + 0.16 * fine[..., None])
+    alb = mix(base, col(0.16, 0.2, 0.34), lat * 0.55)
+    rough = 0.9 - 0.12 * weave; metal = np.zeros_like(rough)
+    return _out(alb, rough, metal, weave * 0.8 + lat * 0.4 + fine * 0.2, 0.75 + 0.25 * weave)
 
 
 def paint_gloves(R, rid):
     p = R.pos; u, v = R.uv[..., 0], R.uv[..., 1]
-    fine = fbm(p * 1.6, 3, 31); grain = fbm(p * 5.0, 2, 32); big = fbm(p * 0.1, 3, 33)
-    leather = mix(col(0.17, 0.095, 0.05), col(0.28, 0.16, 0.08), big) * (0.85 + 0.3 * grain[..., None])
+    fine = fbm(p * 1.6, 3, 31); grain = fbm(p * 6.0, 2, 32); big = fbm(p * 0.1, 3, 33)
+    leather = mix(LEATHER, col(0.30, 0.17, 0.09), big) * (0.8 + 0.4 * grain[..., None])
     rough = 0.55 + 0.25 * grain; metal = np.zeros_like(rough); height = grain * 0.5
-    # stitching rows along island edges (high curvature)
     st = smoothstep(0.02, 0.08, R.curv)
-    seam = (np.sin(p[..., 0] * 7 + p[..., 1] * 7 + p[..., 2] * 7) > 0.5) * st
-    leather = mix(leather, col(0.55, 0.5, 0.4), seam * 0.6)
-    # kote back-of-hand plate (UV top-left) and finger plates (UV top band)
+    seam = (np.sin((p[..., 0] + p[..., 1] + p[..., 2]) * 6) > 0.4) * st
+    leather = mix(leather, col(0.62, 0.55, 0.42), seam * 0.5)
     plate = (u < 0.40) & (v > 0.60)
     ring = (u > 0.42) & (v > 0.70)
-    lac = mix(col(0.03, 0.035, 0.07), col(0.07, 0.08, 0.13), big)
-    edge = smoothstep(0.03, 0.1, R.curv)
-    plate_col = mix(lac, col(0.62, 0.45, 0.16), edge)
-    steel = mix(col(0.22, 0.22, 0.24), col(0.4, 0.4, 0.42), fine)
-    alb = np.where(plate[..., None], plate_col, np.where(ring[..., None], steel, leather))
-    rough = np.where(plate | ring, 0.3 + 0.2 * fine, rough)
-    metal = np.where(plate, 0.15 + 0.85 * edge, np.where(ring, 0.9, metal))
-    return _out(alb, rough, metal, height + plate * edge * 0.5)
+    a1, r1, m1, h1, ao1 = paint_armor(R, rid, row=1.2, cord=0.8)
+    size = R.mask.shape[0]
+    steel = mix(col(0.07, 0.07, 0.08), col(0.20, 0.20, 0.22), fine)
+    alb = np.where(plate[..., None], a1, np.where(ring[..., None], steel, leather))
+    rough = np.where(plate, r1, np.where(ring, 0.3 + 0.2 * fine, rough))
+    metal = np.where(plate, m1, np.where(ring, 0.9, metal))
+    height = np.where(plate, h1, height)
+    return _out(alb, rough, metal, height)
 
 
 def paint_head(R, rid):
     p = R.pos; u, v = R.uv[..., 0], R.uv[..., 1]
     pores = fbm(p * 6.0, 2, 41); big = fbm(p * 0.18, 3, 42); veins = fbm(p * 1.2, 3, 43)
-    skin = mix(col(0.52, 0.34, 0.25), col(0.64, 0.45, 0.34), big)
+    skin = mix(col(0.50, 0.33, 0.24), col(0.63, 0.44, 0.33), big)
     skin = skin * (0.93 + 0.14 * pores[..., None])
-    skin = mix(skin, col(0.62, 0.3, 0.26), smoothstep(0.62, 0.8, veins) * 0.25)
+    skin = mix(skin, col(0.60, 0.30, 0.26), smoothstep(0.62, 0.8, veins) * 0.25)
     rough = 0.52 + 0.18 * pores; metal = np.zeros_like(rough)
     alb = skin
-    # facial features painted in UV space (eye / mouth loops of the atlas)
+
     def disc(cu, cv, r, soft=0.15):
         d = np.sqrt((u - cu) ** 2 + (v - cv) ** 2)
         return smoothstep(r, r * (1 - soft), d)
@@ -272,56 +319,57 @@ def paint_head(R, rid):
         alb = mix(alb, col(0.03, 0.025, 0.02), brow * 0.9)
     lips = disc(0.4725, 0.578, 0.028, 0.5) * (np.abs(v - 0.578) < 0.012)
     alb = mix(alb, col(0.42, 0.18, 0.16), lips * 0.85)
-    # stubble near jaw/mouth
     stub = smoothstep(0.55, 0.7, fbm(p * 8.0, 2, 44)) * smoothstep(0.62, 0.5, v) * 0.5
     alb = mix(alb, alb * 0.55, stub[..., None] if stub.ndim == 2 else stub)
     return _out(alb, rough, metal, pores * 0.6, 0.85 + 0.15 * pores)
 
 
 def paint_helmet(R, rid):
-    p = R.pos; y = p[..., 1]
-    fine = fbm(p * 1.2, 3, 51); big = fbm(p * 0.07, 3, 52); scr = np.abs(fbm(p * np.array([5.0, 0.5, 5.0], np.float32), 3, 53) - 0.5)
-    iron = mix(col(0.045, 0.047, 0.055), col(0.11, 0.115, 0.13), big) * (0.8 + 0.4 * fine[..., None])
-    rough = 0.38 + 0.3 * fine; metal = np.full_like(rough, 0.85); height = fine * 0.3
-    rivet = smoothstep(0.78, 0.9, noise3(p * 0.9, 55)) * smoothstep(0.03, 0.1, R.curv + 0.04)
-    alb = mix(iron, col(0.3, 0.3, 0.32), rivet * 0.5)
-    # crest (maedate): everything high above the skull in gold
-    top = y > np.percentile(y[R.mask], 88) if R.mask.any() else y > 1e9
-    gold = mix(col(0.78, 0.58, 0.18), col(0.45, 0.31, 0.08), fine)
-    alb = np.where(top[..., None], gold, alb); metal = np.where(top, 1.0, metal); rough = np.where(top, 0.28, rough)
-    # neck guard (low part): lacquered plates + crimson lacing
-    low = y < np.percentile(y[R.mask], 28)
-    a2, r2, m2, h2, ao2 = paint_armor(R, rid, 2.4)
+    """kabuto: black iron bowl with gold rim lines and rivets, gold maedate crest, red-laced lacquer neck guard"""
+    p = R.pos; y = p[..., 1]; size = R.mask.shape[0]
+    fine = fbm(p * 1.2, 3, 51); big = fbm(p * 0.07, 3, 52)
+    scr = np.abs(fbm(p * np.array([5.0, 0.5, 5.0], np.float32), 3, 53) - 0.5)
+    iron = mix(col(0.035, 0.036, 0.042), col(0.09, 0.095, 0.11), big) * (0.8 + 0.4 * fine[..., None])
+    rough = 0.34 + 0.3 * fine; metal = np.full_like(rough, 0.85); height = fine * 0.3
+    # radial rivet rows on the bowl (bone-local angle around the head axis)
+    s_, arc, r = cyl(R)
+    th = arc / np.maximum(r, 3.0)
+    rivet = (np.abs(((th * 14 / (2 * math.pi)) % 1.0) - 0.5) < 0.1) & (np.abs(((s_ / 2.4) % 1.0) - 0.5) < 0.18) & (r > 5)
+    alb = np.where(rivet[..., None], GOLD * 0.9, iron); metal = np.where(rivet, 1.0, metal); height = height + rivet * 0.5
+    ymax = np.percentile(y[R.mask], 95) if R.mask.any() else 1e9
+    ymin = np.percentile(y[R.mask], 28) if R.mask.any() else -1e9
+    top = y > ymax
+    gold = mix(col(0.82, 0.62, 0.22), col(0.45, 0.31, 0.08), fine)
+    alb = np.where(top[..., None], gold, alb); metal = np.where(top, 1.0, metal); rough = np.where(top, 0.26, rough)
+    low = y < ymin
+    a2, r2, m2, h2, ao2 = paint_armor(R, rid, row=2.4, cord=1.3)
     alb = np.where(low[..., None], a2, alb); rough = np.where(low, r2, rough); metal = np.where(low, m2, metal); height = np.where(low, h2, height)
-    edge = smoothstep(0.04, 0.12, R.curv)
-    alb = mix(alb, col(0.6, 0.45, 0.18), edge * (~top) * 0.7)
+    w = max(1, size // 700); d = inner_dist(R.mask, w + 2)
+    trim = ((d > 0) & (d <= w) & R.mask & (~top))
+    alb = np.where(trim[..., None], gold, alb); metal = np.where(trim, 1.0, metal); rough = np.where(trim, 0.28, rough)
     sc = smoothstep(0.012, 0.0, scr) * 0.3
-    alb = alb * (1 + sc[..., None]);
+    alb = alb * (1 + sc[..., None])
     return _out(alb, rough, metal, height)
 
 
 def paint_mask(R, rid):
-    p = R.pos; fine = fbm(p * 2.0, 3, 61); big = fbm(p * 0.2, 3, 62)
-    red = mix(col(0.30, 0.025, 0.02), col(0.52, 0.06, 0.04), big) * (0.85 + 0.3 * fine[..., None])
-    rough = 0.3 + 0.2 * fine; metal = np.full_like(rough, 0.1)
-    # dark interior / nostril / moustache hints via vertical position
-    edge = smoothstep(0.03, 0.1, R.curv)
-    alb = mix(red, col(0.02, 0.015, 0.015), smoothstep(0.55, 0.8, fbm(p * 0.5, 3, 63)) * 0.55)
-    alb = mix(alb, col(0.6, 0.45, 0.18), edge * 0.6)
-    metal = np.where(edge > 0.4, 0.9, metal)
-    return _out(alb, rough, metal, fine * 0.4)
+    """menpo: deep red lacquer, black moustache/teeth shadows, gold edge fittings"""
+    p = R.pos; size = R.mask.shape[0]; fine = fbm(p * 2.0, 3, 61); big = fbm(p * 0.2, 3, 62)
+    red = mix(col(0.30, 0.015, 0.02), col(0.50, 0.05, 0.04), big) * (0.85 + 0.3 * fine[..., None])
+    rough = 0.28 + 0.2 * fine; metal = np.full_like(rough, 0.1)
+    alb = mix(red, col(0.015, 0.012, 0.012), smoothstep(0.55, 0.8, fbm(p * 0.5, 3, 63)) * 0.5)
+    trim = np.zeros_like(rough)
+    return _out(alb, rough, metal, fine * 0.4 + trim * 0.4)
 
 
 def paint_prot(R, rid):
-    alb, rough, metal, height, ao = paint_armor(R, rid, 2.8)
+    alb, rough, metal, height, ao = paint_armor(R, rid, row=2.6, cord=1.2)
     p = R.pos
     shin = (R.reg == rid['leg'])
     fine = fbm(p * 1.4, 3, 71)
-    iron = mix(col(0.07, 0.072, 0.082), col(0.2, 0.2, 0.22), fine)
-    rv = smoothstep(0.8, 0.92, noise3(p * 0.8, 72))
-    iron = mix(iron, col(0.45, 0.45, 0.47), rv * 0.6)
-    keep = np.where(shin[..., None], mix(alb, iron, 0.55), alb)
-    return _out(keep, np.where(shin, 0.38, rough), np.where(shin, 0.75, metal), height, ao)
+    iron = mix(col(0.05, 0.052, 0.06), col(0.16, 0.16, 0.18), fine)
+    keep = np.where(shin[..., None], mix(alb, iron, 0.45), alb)
+    return _out(keep, np.where(shin, 0.36, rough), np.where(shin, 0.8, metal), height, ao)
 
 
 def paint_sword(R, rid):
@@ -336,7 +384,7 @@ def paint_sword(R, rid):
     alb = steel; rough = 0.2 + 0.2 * (1 - hamon) + 0.1 * fine; metal = np.ones_like(rough); height = grain * 0.1
     wrap = reg == rid['wrap']
     dia = (np.sin((z + y * 0.0) * 2.4) * np.sin(z * 2.4 + 1.6) > 0)
-    ito = mix(col(0.04, 0.05, 0.10), col(0.10, 0.12, 0.22), dia.astype(np.float32))
+    ito = mix(col(0.025, 0.025, 0.03), col(0.085, 0.085, 0.10), dia.astype(np.float32))
     alb = np.where(wrap[..., None], ito * (0.9 + 0.2 * fine[..., None]), alb)
     rough = np.where(wrap, 0.75, rough); metal = np.where(wrap, 0.0, metal); height = np.where(wrap, dia.astype(np.float32) * 0.7, height)
     tsu = reg == rid['tsuba']
@@ -356,6 +404,20 @@ def paint_sword(R, rid):
 def _groups_for(obj):
     vg = {i: g.name for i, g in enumerate(obj.vertex_groups)}
     return vg
+
+
+def _bone_fn(obj):
+    me = obj.data; vg = {i: g.name for i, g in enumerate(obj.vertex_groups)}
+    idx = {n: i for i, n in enumerate(_BT['names'])}
+    out = np.full(len(me.polygons), -1, np.int16)
+    for p in me.polygons:
+        w = {}
+        for vi in p.vertices:
+            for g in me.vertices[vi].groups:
+                n = vg.get(g.group)
+                if n in idx: w[n] = w.get(n, 0) + g.weight
+        if w: out[p.index] = idx[max(w, key=w.get)]
+    return lambda i: out[i]
 
 
 def _region_fn(obj, kind):
@@ -434,7 +496,9 @@ def texture_scene(arm, out_dir, scale=1.0, quality=90, only=None):
             bpy.ops.object.mode_set(mode='OBJECT')
         size = int(size * scale)
         rid, rf = _region_fn(obj, kind)
-        R = rasterize(obj, arm, size, rf)
+        set_bone_table(arm)
+        bf = _bone_fn(obj)
+        R = rasterize(obj, arm, size, rf, bf)
         m = fn(R, rid)
         alb = m['alb']; rough = m['rough']; metal = m['metal']; height = m['height']; ao = m['ao']
         orm = np.stack([ao, rough, metal], -1)
