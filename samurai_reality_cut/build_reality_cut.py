@@ -155,7 +155,8 @@ T_ENTER = 2.30
 V = Vector
 SWORD_FREE = [
     (1.15, 'saya'),
-    (1.30, V((-10, 16, 26)), V((0.15, 0.20, -0.97)), V((0, 1, 0))),
+    (1.26, V((-12, 20, 30)), V((0.20, 0.70, 0.10)), V((0, 1, 0))),
+    (1.34, V((-16, 36, 24)), V((-0.10, 0.90, -0.30)), V((0.5, 0.0, 1))),
     (1.45, V((-18, 46, 26)), V((-0.20, 0.88, -0.42)), V((0.5, 0.0, 1))),
     (1.52, V((-22, 50, 18)), V((-0.32, 0.86, -0.40)), V((0.5, 0.0, 1))),
     (1.585, V((-14, 38, 26)), V((-0.10, 0.55, 0.83)), V((0.6, -0.4, 0.4))),
@@ -964,6 +965,7 @@ def main():
     ap.add_argument('--textures', default=None)
     ap.add_argument('--no-export', action='store_true')
     ap.add_argument('--no-optimize', action='store_true')
+    ap.add_argument('--glb', action='store_true')
     ap.add_argument('--quick', action='store_true')
     ap.add_argument('--worker', default=None)
     ap.add_argument('--workers', type=int, default=4)
@@ -1001,7 +1003,7 @@ def main():
     bpy.ops.wm.save_as_mainfile(filepath=os.path.join(a.out, 'reality_cut.blend'))
     if not a.no_export:
         export_fbx(os.path.join(a.out, 'Samurai_RealityCut.fbx'))
-        export_glb(arm, os.path.join(a.out, 'reality_cut.glb'), a.textures)
+        if a.glb: export_glb(arm, os.path.join(a.out, 'reality_cut.glb'), a.textures)
     return arm
 
 
