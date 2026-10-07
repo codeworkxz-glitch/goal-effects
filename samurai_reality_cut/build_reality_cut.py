@@ -160,10 +160,10 @@ SWORD_FREE = [
     (1.52, V((-22, 50, 18)), V((-0.32, 0.86, -0.40)), V((0.5, 0.0, 1))),
     (1.585, V((-14, 38, 26)), V((-0.10, 0.55, 0.83)), V((0.6, -0.4, 0.4))),
     (1.62, V((-4, 18, 38)), V((0.15, 0.05, 0.99)), V((0.8, -0.5, 0.1))),
-    (1.655, V((4, -2, 38)), V((0.45, -0.45, 0.77)), V((0.8, -0.6, 0.0))),
-    (1.69, V((8, -6, 38)), V((0.40, -0.62, 0.67)), V((0.8, -0.6, 0.0))),
-    (1.76, V((6, -2, 38)), V((0.35, -0.70, 0.60)), V((0.8, -0.6, 0.0))),
-    (2.0, V((6, -2, 38)), V((0.35, -0.70, 0.60)), V((0.8, -0.6, 0.0))),
+    (1.655, V((4, -2, 38)), V((0.50, -0.45, 0.74)), V((0.8, -0.6, 0.0))),
+    (1.69, V((8, -6, 38)), V((0.72, -0.50, 0.48)), V((0.8, -0.6, 0.0))),
+    (1.76, V((8, -4, 36)), V((0.86, -0.40, 0.30)), V((0.8, -0.6, 0.0))),
+    (2.0, V((8, -4, 36)), V((0.86, -0.40, 0.30)), V((0.8, -0.6, 0.0))),
     (2.15, V((-6, 14, 30)), V((0.90, -0.30, 0.20)), V((0.2, 0.0, 1))),
     (2.30, 'saya'),
 ]
@@ -336,6 +336,14 @@ class Solver:
             m = rh[f'{s}_m']; h = rh[f'{s}_hand']
             self.pg[s] = (m - h) + Vector((0, -2.6, 0))
         self.exit_D_c = (SAYA_DRAW_M_C - RIGHT_EXIT_C).normalized()
+        self.h0 = {}
+        self.hand0 = {}
+        for s_ in 'LR':
+            d0 = (rh[f'{s_}_forarm'] - rh[f'{s_}_arm']).normalized()
+            d0b = (rh[f'{s_}_hand'] - rh[f'{s_}_forarm']).normalized()
+            self.h0[s_] = d0.cross(d0b).normalized() if d0.cross(d0b).length > 0.05 else d0.cross(Vector((0, 0, 1))).normalized()
+            self.hand0[s_] = (rh[f'{s_}_m'] - rh[f'{s_}_hand']).normalized()
+        self.met = {}
         # sword key times for chest-local interpolation (computed per solve)
 
     # -- sword/saya frames in chest-local needs the torso; do it per-frame ------------
@@ -368,6 +376,7 @@ class Solver:
         opt = opt or {}
         sw = opt.get('swiv', (0.0, 0.0)); twv = opt.get('twist', (0.0, 0.0)); lfv = opt.get('lift', (0.0, 0.0))
         shf = opt.get('shf', (SH_FOLLOW, SH_FOLLOW))
+        flp = opt.get('flip', (1, 1))
         rig = self.rig
         rh, rr = rig.rh, rig.rr
         hipP, spP, chP, hdP = self.torso(t)
@@ -496,19 +505,31 @@ class Solver:
             place(sh, Dabs=Dsh)
             return Dsh
 
-        def grip_pose(s, G, A, shoulder_pos, fhint):
-            """hand delta (3x3) so the fist wraps handle axis A at grip point G; returns (Delta, wrist)"""
+        def grip_pose(s, G, A, shoulder_pos, fhint, pole_):
+            """hand delta (3x3) so the fist wraps handle axis A at grip point G; returns (Delta, wrist).
+            The fingers are aimed along the forearm (elbow -> grip) so the wrist stays close to neutral."""
             pg = self.pg[s]
             z = Vector((0, 0, 1))
             p_perp = pg - z * pg.dot(z); p_perp.normalize()
             r = (G - shoulder_pos); r = r - A * r.dot(A)
             if r.length < 1e-3: r = fhint - A * fhint.dot(A)
             r.normalize()
+            a_, b_ = self.arm_len[s]
+            W0 = G - r * (pg - z * pg.dot(z)).length
+            ax0 = W0 - shoulder_pos
+            if ax0.length > 1e-3:
+                E0, _, _ = two_bone(shoulder_pos, a_, b_, W0, rot_axis(ax0.normalized(), sw[0 if s == 'L' else 1]) @ pole_)
+                r2 = G - E0; r2 = r2 - A * r2.dot(A)
+                if r2.length > 1e-3: r = r2.normalized()
             r = rot_axis(A, twv[0 if s == 'L' else 1]) @ r
+            fs = max(-1.0, min(1.0, flp[0 if s == 'L' else 1]))
+            wflip = (1.0 - fs) * 0.5
             # rest frame (z, p_perp, z x p_perp) -> target frame (A, r, A x r)
             B0 = Matrix((z, p_perp, z.cross(p_perp))).transposed()
-            B1 = Matrix((A, r, A.cross(r))).transposed()
-            Dl = B1 @ B0.inverted()
+            Dl = (Matrix((A, r, A.cross(r))).transposed()) @ B0.inverted()
+            if wflip > 1e-3:
+                Dm = (Matrix((-A, r, (-A).cross(r))).transposed()) @ B0.inverted()
+                Dl = slerp3(Dl, Dm, wflip)
             return Dl, G - Dl @ pg
 
         # right side
@@ -516,7 +537,8 @@ class Solver:
         liftR = Dchest @ Vector((0, 8, 12)) * (lfv[1] * 4 * gR * (1 - gR))
         DshR_tmp = shoulder('R', lerp(R_FREE_WRIST, Gr_sword, gR))
         armR_head = POS['R_shoulder'] + DEL['R_shoulder'] @ (rh['R_arm'] - rh['R_shoulder'])
-        DR_g, WR_g = grip_pose('R', Gr_sword, D, armR_head, Vector((0, -1, 0.3)))
+        polR = Dchest @ Vector((-0.5, -1.0, -0.7)); polL = Dchest @ Vector((0.5, -1.0, -0.7))
+        DR_g, WR_g = grip_pose('R', Gr_sword, D, armR_head, Vector((0, -1, 0.3)), polR)
         DR_free = DEL['R_shoulder']
         Wr = lerp(R_FREE_WRIST, WR_g, gR) + liftR
         Dhand_R = slerp3(DR_free, DR_g, gR)
@@ -526,59 +548,105 @@ class Solver:
         A_l = (lerp(Dsaya, D, bL)).normalized()
         DshL_tmp = shoulder('L', G_l)
         armL_head = POS['L_shoulder'] + DEL['L_shoulder'] @ (rh['L_arm'] - rh['L_shoulder'])
-        DL_g, WL_g = grip_pose('L', G_l, A_l, armL_head, Vector((0, -1, 0.3)))
+        DL_g, WL_g = grip_pose('L', G_l, A_l, armL_head, Vector((0, -1, 0.3)), polL)
 
-        def solve_arm(s, wrist, Dhand, pole):
+        def solve_arm(s, wrist, Dhand, pole, Ahand=None):
             a, b = self.arm_len[s]
             Sh = POS[f'{s}_shoulder'] + DEL[f'{s}_shoulder'] @ (rh[f'{s}_arm'] - rh[f'{s}_shoulder'])
             ax_ = (wrist - Sh)
+            swv_ = sw[0 if s == 'L' else 1]
             if ax_.length > 1e-4:
-                pole = rot_axis(ax_.normalized(), sw[0 if s == 'L' else 1]) @ pole
+                pole = rot_axis(ax_.normalized(), swv_) @ pole
             elbow, wr_pos, clamp = two_bone(Sh, a, b, wrist, pole)
             if clamp and (wrist - Sh).length - (a + b) > 2.0:
                 self.warn.append((round(t, 3), s, round((wrist - Sh).length - (a + b), 1)))
             sh = f'{s}_shoulder'
             d0 = (rh[f'{s}_forarm'] - rh[f'{s}_arm']).normalized()
             d1 = (elbow - Sh).normalized()
-            Da = rot_min(DEL[sh] @ d0, d1) @ DEL[sh]
-            place(f'{s}_arm', Dabs=Da)
             d0b = (rh[f'{s}_hand'] - rh[f'{s}_forarm']).normalized()
             d1b = (wr_pos - elbow).normalized()
+            Dsw = rot_min(DEL[sh] @ d0, d1) @ DEL[sh]
+            # humerus roll: make the elbow hinge axis perpendicular to the plane (shoulder, elbow, wrist)
+            roll = 0.0
+            n_ = d1.cross(d1b)
+            if n_.length > 0.08:
+                n_.normalize()
+                hs = Dsw @ self.h0[s]
+                hs = hs - d1 * hs.dot(d1); n2 = n_ - d1 * n_.dot(d1)
+                if hs.length > 1e-4 and n2.length > 1e-4:
+                    hs.normalize(); n2.normalize()
+                    roll = math.atan2(d1.dot(hs.cross(n2)), hs.dot(n2))
+            Da = Matrix.Rotation(roll, 3, d1) @ Dsw
+            place(f'{s}_arm', Dabs=Da)
             Df = rot_min(Da @ d0b, d1b) @ Da
-            # twist forearm half-way towards hand orientation (swing-twist)
+            # forearm pronation / supination: take most of the twist, wrist keeps the (small) remainder
             q = (Dhand @ Df.inverted()).to_quaternion()
-            axis = d1b
-            ang = 2 * math.atan2(Vector((q.x, q.y, q.z)).dot(axis), q.w)
+            ang = 2 * math.atan2(Vector((q.x, q.y, q.z)).dot(d1b), q.w)
             if ang > math.pi: ang -= 2 * math.pi
             if ang < -math.pi: ang += 2 * math.pi
-            Df = Matrix.Rotation(ang * 0.6, 3, axis) @ Df
+            lim = math.radians(85)
+            applied = max(-lim, min(lim, ang * 0.75))
+            Df = Matrix.Rotation(applied, 3, d1b) @ Df
             place(f'{s}_forarm', Dabs=Df)
             place(f'{s}_hand', Dabs=Dhand, pos=wr_pos)
+            elbow_int = math.degrees(math.acos(max(-1, min(1, (Sh - elbow).normalized().dot((wr_pos - elbow).normalized())))))
+            dev = math.degrees(math.acos(max(-1, min(1, (Dhand @ self.hand0[s]).dot(d1b)))))
+            gang = 90.0 if Ahand is None else math.degrees(math.acos(max(0.0, min(1.0, abs(Ahand.normalized().dot(d1b))))))
+            self.met[s] = (elbow_int, abs(math.degrees(applied)), abs(math.degrees(ang - applied)), dev, abs(math.degrees(roll)), gang)
 
-        # elbow poles: down and out
-        polR = Dchest @ Vector((-0.5, -1.0, -0.7))
-        polL = Dchest @ Vector((0.5, -1.0, -0.7))
-        solve_arm('R', Wr, Dhand_R, polR)
-        solve_arm('L', WL_g, DL_g, polL)
+        solve_arm('R', Wr, Dhand_R, polR, D if gR > 0.5 else None)
+        solve_arm('L', WL_g, DL_g, polL, A_l)
 
-        # fingers
-        def fingers(s, curl, Dhand, grip_w):
+        # fingers: wrap around the handle (fitted) or relaxed
+        FB = {'m': (62, 78, 50), 'f': (62, 78, 50), 'r': (66, 80, 52), 'l': (70, 82, 55)}
+
+        def finger_joints(s, fn, c, Dhand, wr):
             ax = Vector((0, 0, -1)) if s == 'L' else Vector((0, 0, 1))
-            for fn, (b0, b1, b2) in {'m': (62, 78, 50), 'f': (62, 78, 50), 'r': (66, 80, 52), 'l': (70, 82, 55)}.items():
+            b0, b1, b2 = FB[fn]
+            p0 = wr + Dhand @ (rh[f'{s}_{fn}'] - rh[f'{s}_hand'])
+            D0 = Dhand @ rot_axis(ax, b0 * c)
+            p1 = p0 + D0 @ (rh[f'{s}_{fn}1'] - rh[f'{s}_{fn}'])
+            D1 = D0 @ rot_axis(ax, b1 * c)
+            p2 = p1 + D1 @ (rh[f'{s}_{fn}2'] - rh[f'{s}_{fn}1'])
+            D2 = D1 @ rot_axis(ax, b2 * c)
+            p3 = p2 + D2 @ (rh[f'{s}_{fn}3'] - rh[f'{s}_{fn}2'])
+            return (p1, p2, p3)
+
+        def fit_curl(s, fn, Dhand, wr, G, A, rad):
+            best, bc = 1e9, 0.8
+            for k in range(14):
+                c = 0.25 + 0.1 * k
+                err = 0.0
+                for p in finger_joints(s, fn, c, Dhand, wr):
+                    v = p - G; d = (v - A * v.dot(A)).length
+                    e = d - (rad + 0.65)
+                    err += e * e * (3.0 if e < 0 else 1.0)
+                if err < best: best, bc = err, c
+            return bc
+
+        def fingers(s, curl, Dhand, wr, wrapG=None, wrapA=None, rad=1.6, w=0.0):
+            ax = Vector((0, 0, -1)) if s == 'L' else Vector((0, 0, 1))
+            cs = []
+            for fn, (b0, b1, b2) in FB.items():
                 c = curl
+                if wrapG is not None and w > 0:
+                    c = lerp(curl, fit_curl(s, fn, Dhand, wr, wrapG, wrapA, rad), w)
+                cs.append(c)
                 D0 = Dhand @ rot_axis(ax, b0 * c)
                 place(f'{s}_{fn}', Dabs=D0)
                 D1 = D0 @ rot_axis(ax, b1 * c); place(f'{s}_{fn}1', Dabs=D1)
                 D2 = D1 @ rot_axis(ax, b2 * c); place(f'{s}_{fn}2', Dabs=D2)
                 place(f'{s}_{fn}3', Dabs=D2)
+            cm = sum(cs) / len(cs)
             ta = Vector((0, 0.5, -1)).normalized() if s == 'L' else Vector((0, 0.5, 1)).normalized()
-            T0 = Dhand @ rot_axis(ta, 25 * curl)
+            T0 = Dhand @ rot_axis(ta, 25 * cm)
             place(f'{s}_t', Dabs=T0)
-            T1 = T0 @ rot_axis(ax, 30 * curl); place(f'{s}_t1', Dabs=T1)
-            T2 = T1 @ rot_axis(ax, 25 * curl); place(f'{s}_t2', Dabs=T2)
+            T1 = T0 @ rot_axis(ax, 30 * cm); place(f'{s}_t1', Dabs=T1)
+            T2 = T1 @ rot_axis(ax, 25 * cm); place(f'{s}_t2', Dabs=T2)
 
-        fingers('R', pchip(CURL_R, t), Dhand_R, gR)
-        fingers('L', pchip(CURL_L, t), DL_g, 1.0)
+        wrR = POS['R_hand']; wrL = POS['L_hand']
+        fingers('R', pchip(CURL_R, t), Dhand_R, wrR, Gr_sword, D, 1.6, gR)
+        fingers('L', pchip(CURL_L, t), DL_g, wrL, G_l, A_l, 1.6 + 0.4 * (1 - bL), 1.0)
 
         # ---------- legs
         for s in 'LR':
@@ -669,58 +737,93 @@ def set_pose(arm, tabs, POS, DEL, Pk, Fk, Ms, Fs):
     bpy.context.view_layer.update()
 
 
-def optimize_swivel(rig, solver, arm, step=3, quick=False):
-    """per-frame search over (elbow swivel, wrist twist, path lift) against the real deformed meshes,
-    then Viterbi smoothing across time."""
-    import clips, itertools
-    scorer = clips.Scorer()
-    tabs = rig_tables(rig, arm)
-    SW = (-90, -60, -30, 0, 30, 60, 90)
-    TW = (-50, -25, 0, 25, 50)
+def anat_pen(m, swiv):
+    """soft joint-limit cost: elbow flexion, forearm pronation, wrist deviation/twist, humerus roll, elbow swivel."""
+    elbow_int, applied, resid, dev, roll, gang = m
+    return (0.012 * max(0.0, 50.0 - gang) ** 2 + 0.02 * max(0.0, 35.0 - elbow_int) ** 2 + 0.004 * max(0.0, applied - 70.0) ** 2 + 0.01 * max(0.0, resid - 20.0) ** 2
+            + 0.006 * max(0.0, dev - 50.0) ** 2 + 0.004 * max(0.0, roll - 80.0) ** 2 + 0.02 * max(0.0, abs(swiv) - 30.0) ** 2)
+
+
+def opt_setup(quick):
+    SW = (-50, -30, -15, 0, 15, 30, 45, 60)
+    TW = (-135, -105, -75, -50, -25, 0, 25, 50, 75, 105, 135)
     LF = (0.0, 1.0)
+    SF = (0.15, 0.5)
+    step = 3
     if quick:
-        SW = (-80, -40, 0, 40, 80); TW = (-45, 0, 45); LF = (0.0, 1.0); step = 4
-    SF = (0.1, 0.4, 0.7)
-    if quick: SF = (0.15, 0.55)
-    cands = list(itertools.product(range(len(SW)), range(len(TW)), range(len(LF)), range(len(SF))))
+        SW = (-45, -20, 0, 20, 45); TW = (-120, -80, -40, 0, 40, 80, 120); SF = (0.15, 0.55); step = 4
+    import itertools
+    cands = list(itertools.product(range(len(SW)), range(len(TW)), range(len(LF)), range(len(SF)), range(2)))
     idx = list(range(0, N, step))
     if idx[-1] != N - 1: idx.append(N - 1)
+    return SW, TW, LF, SF, cands, idx
+
+
+def opt_costs(rig, solver, arm, frames, setup):
+    """clip + joint-limit cost of every (swivel, twist, lift, clavicle) candidate at the given frames."""
+    import clips
+    SW, TW, LF, SF, cands, idx = setup
+    scorer = clips.Scorer()
+    tabs = rig_tables(rig, arm)
     cache = {}
-    cost = {'L': [], 'R': []}
-    for i in idx:
+    out = {}
+    for i in frames:
         t = i / FPS
         rowL, rowR = [], []
-        for (a_, b_, c_, d_) in cands:
-            o = {'swiv': (SW[a_],) * 2, 'twist': (TW[b_],) * 2, 'lift': (LF[c_],) * 2, 'shf': (SF[d_],) * 2}
+        for (a_, b_, c_, d_, e_) in cands:
+            fl_ = 1 if e_ == 0 else -1
+            o = {'swiv': (SW[a_],) * 2, 'twist': (TW[b_],) * 2, 'lift': (LF[c_],) * 2, 'shf': (SF[d_],) * 2, 'flip': (fl_, fl_)}
             POS, DEL, (Pk, Fk), (Ms, Ds, Fs) = solver.solve(t, cache, o)
             set_pose(arm, tabs, POS, DEL, Pk, Fk, Ms, Fs)
             T = scorer.trees(bpy.context.evaluated_depsgraph_get())
             pen = abs(SW[a_]) * 0.03 + abs(TW[b_]) * 0.03 + LF[c_] * 1.0 + abs(SF[d_] - 0.22) * 2
-            rowL.append(scorer.side_cost(T, 'L') + pen)
-            rowR.append(scorer.side_cost(T, 'R') + pen)
-        cost['L'].append(rowL); cost['R'].append(rowR)
-        print('  opt frame', i, 'minL', min(rowL), 'minR', min(rowR), flush=True)
-    out = {'swiv': {}, 'twist': {}, 'lift': {}, 'shf': {}}
+            rowL.append(scorer.side_cost(T, 'L') + pen + 7 * anat_pen(solver.met['L'], SW[a_]))
+            rowR.append(scorer.side_cost(T, 'R') + pen + 7 * anat_pen(solver.met['R'], SW[a_]))
+        out[i] = (rowL, rowR)
+        print('  opt frame', i, 'minL', round(min(rowL), 1), 'minR', round(min(rowR), 1), flush=True)
+    return out
+
+
+def optimize_swivel(rig, solver, arm, fbx, outdir, quick=False, workers=4):
+    """per-frame search over (elbow swivel, wrist twist, path lift, clavicle follow) against the real deformed meshes
+    and joint limits, evaluated in parallel worker processes, then Viterbi-smoothed in time."""
+    import numpy as np, json, subprocess
+    setup = opt_setup(quick)
+    SW, TW, LF, SF, cands, idx = setup
+    costs = {}
+    if workers > 1:
+        procs = []
+        for k in range(workers):
+            cmd = [sys.executable, '-I', os.path.abspath(__file__), fbx, outdir, '--worker', f'{k}/{workers}']
+            if quick: cmd.append('--quick')
+            procs.append(subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
+        for p in procs: p.wait()
+        for k in range(workers):
+            with open(os.path.join(outdir, f'_cost_{k}.json')) as f:
+                for key, v in json.load(f).items(): costs[int(key)] = v
+            os.remove(os.path.join(outdir, f'_cost_{k}.json'))
+    else:
+        costs = opt_costs(rig, solver, arm, idx, setup)
+    out = {'swiv': {}, 'twist': {}, 'lift': {}, 'shf': {}, 'flip': {}}
     lam = (5.0, 3.0, 4.0)
     K = len(cands)
-    trans = [[lam[0] * abs(cands[j][0] - cands[jp][0]) + lam[1] * abs(cands[j][1] - cands[jp][1]) + lam[2] * 2 * abs(cands[j][2] - cands[jp][2]) + 6.0 * abs(cands[j][3] - cands[jp][3])
-              for jp in range(K)] for j in range(K)]
-    for s in 'LR':
-        C = cost[s]; n = len(C)
-        best = C[0][:]; back = []
+    ca = np.array(cands)
+    trans = (lam[0] * np.abs(ca[:, None, 0] - ca[None, :, 0]) + lam[1] * np.abs(ca[:, None, 1] - ca[None, :, 1])
+             + lam[2] * 2 * np.abs(ca[:, None, 2] - ca[None, :, 2]) + 6.0 * np.abs(ca[:, None, 3] - ca[None, :, 3]) + 60.0 * np.abs(ca[:, None, 4] - ca[None, :, 4])).astype(np.float64)
+    for si, s in enumerate('LR'):
+        C = np.array([costs[i][si] for i in idx], np.float64); n = len(idx)
+        best = C[0].copy(); back = []
         for f in range(1, n):
-            nb = []; bk = []
-            for j in range(K):
-                tj = trans[j]
-                m = min(range(K), key=lambda q: best[q] + tj[q])
-                nb.append(C[f][j] + best[m] + tj[m]); bk.append(m)
-            best = nb; back.append(bk)
-        j = min(range(K), key=lambda q: best[q]); path = [j]
+            tot = best[None, :] + trans
+            m = tot.argmin(axis=1)
+            best = C[f] + tot[np.arange(K), m]
+            back.append(m)
+        j = int(best.argmin()); path = [j]
         for bk in reversed(back):
-            j = bk[j]; path.append(j)
+            j = int(bk[j]); path.append(j)
         path.reverse()
-        print('opt', s, 'residual', sum(C[f][path[f]] for f in range(n)))
-        for d, vals in enumerate((SW, TW, LF, SF)):
+        print('opt', s, 'residual', float(sum(C[f][path[f]] for f in range(n))))
+        for d, vals in enumerate((SW, TW, LF, SF, (1, -1))):
             ang = [vals[cands[j][d]] for j in path]
             full = []
             for i in range(N):
@@ -729,10 +832,27 @@ def optimize_swivel(rig, solver, arm, step=3, quick=False):
                 full.append(lerp(ang[f], ang[f + 1], u))
             sm = []
             for i in range(N):
-                w = [full[min(max(i + dd, 0), N - 1)] for dd in range(-3, 4)]
+                rr = 5 if d == 4 else 3
+                w = [full[min(max(i + dd, 0), N - 1)] for dd in range(-rr, rr + 1)]
                 sm.append(sum(w) / len(w))
-            out[('swiv', 'twist', 'lift', 'shf')[d]][s] = sm
+            out[('swiv', 'twist', 'lift', 'shf', 'flip')[d]][s] = sm
     return out
+
+
+def report_anatomy(solver, swt):
+    cache = {}
+    worst = {}
+    print('t     | L: elbow  pron  wristTw  wristDev  humRoll gripAng | R: elbow  pron  wristTw  wristDev  humRoll gripAng')
+    for i in range(0, N, 6):
+        t = i / FPS
+        solver.solve(t, cache, {k: (v['L'][i], v['R'][i]) for k, v in swt.items()} if swt else None)
+        mL, mR = solver.met['L'], solver.met['R']
+        print(f'{t:4.2f}  | ' + ' '.join(f'{x:6.0f}' for x in mL) + '   | ' + ' '.join(f'{x:6.0f}' for x in mR))
+        for k, m in (('L', mL), ('R', mR)):
+            w = worst.setdefault(k, [999, 0, 0, 0, 0, 999])
+            w[0] = min(w[0], m[0]); w[5] = min(w[5], m[5])
+            for j in range(1, 5): w[j] = max(w[j], m[j])
+    print('WORST  (min elbow interior, max pron, max wrist twist, max wrist dev, max roll):', worst)
 
 
 def bake(rig, solver, katana_objs, swt=None):
@@ -833,8 +953,8 @@ def export_fbx(path):
     bpy.ops.export_scene.fbx(filepath=path, use_selection=True, object_types={'ARMATURE', 'MESH'}, add_leaf_bones=False,
                              bake_anim=True, bake_anim_use_all_bones=True, bake_anim_use_nla_strips=False,
                              bake_anim_use_all_actions=False, bake_anim_force_startend_keying=True, bake_anim_step=1.0,
-                             bake_anim_simplify_factor=0.0, apply_scale_options='FBX_SCALE_NONE', path_mode='AUTO',
-                             embed_textures=False, mesh_smooth_type='FACE', use_armature_deform_only=False)
+                             bake_anim_simplify_factor=0.0, apply_scale_options='FBX_SCALE_NONE', path_mode='COPY',
+                             embed_textures=True, mesh_smooth_type='FACE', use_armature_deform_only=False)
     print('FBX size MB', os.path.getsize(path) / 1e6)
 
 
@@ -845,6 +965,10 @@ def main():
     ap.add_argument('--no-export', action='store_true')
     ap.add_argument('--no-optimize', action='store_true')
     ap.add_argument('--quick', action='store_true')
+    ap.add_argument('--worker', default=None)
+    ap.add_argument('--workers', type=int, default=4)
+    ap.add_argument('--tex-scale', type=float, default=1.0)
+    ap.add_argument('--no-textures', action='store_true')
     a = ap.parse_args(sys.argv[sys.argv.index('--') + 1:] if '--' in sys.argv else sys.argv[1:])
     os.makedirs(a.out, exist_ok=True)
     arm = load(a.fbx)
@@ -853,16 +977,27 @@ def main():
     rig = Rig(arm)       # refresh with new bones present (order list gets the extras, harmless)
     rig.order = [b for b in rig.order if b not in ('katana_root', 'saya_root')]
     solver = Solver(rig)
+    if a.worker:
+        import json
+        k, n = [int(x) for x in a.worker.split('/')]
+        setup = opt_setup(a.quick)
+        res = opt_costs(rig, solver, arm, setup[5][k::n], setup)
+        with open(os.path.join(a.out, f'_cost_{k}.json'), 'w') as f: json.dump(res, f)
+        return
     swt = None
     if not a.no_optimize:
-        swt = optimize_swivel(rig, solver, arm, quick=a.quick)
+        swt = optimize_swivel(rig, solver, arm, a.fbx, a.out, quick=a.quick, workers=a.workers)
         arm.animation_data_clear() if arm.animation_data else None
+    report_anatomy(solver, swt)
     moving, frames = bake(rig, solver, objs, swt)
     print('moving bones:', len(moving), ' frames:', N)
     if solver.warn:
         seen = {}
         for t, s, over in solver.warn: seen.setdefault(s, []).append((t, over))
         for s, v in seen.items(): print('REACH WARN', s, v[:6], '... n=', len(v))
+    if not a.no_textures:
+        import texturing
+        texturing.texture_scene(arm, os.path.join(a.out, 'textures'), scale=a.tex_scale)
     bpy.ops.wm.save_as_mainfile(filepath=os.path.join(a.out, 'reality_cut.blend'))
     if not a.no_export:
         export_fbx(os.path.join(a.out, 'Samurai_RealityCut.fbx'))

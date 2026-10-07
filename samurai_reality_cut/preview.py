@@ -1,18 +1,18 @@
 """Render a contact sheet:  python preview.py reality_cut.blend out.png t1,t2,...  [front|side|three]"""
-import bpy, sys, math
+import bpy, sys, math, os
 from mathutils import Vector
 from PIL import Image
 blend, out, times = sys.argv[-4], sys.argv[-3], [float(x) for x in sys.argv[-2].split(',')]
 view = sys.argv[-1]
 bpy.ops.wm.open_mainfile(filepath=blend)
 sc = bpy.context.scene
-sc.render.engine = 'CYCLES'; sc.cycles.samples = 6; sc.cycles.device = 'CPU'
+sc.render.engine = 'CYCLES'; sc.cycles.samples = int(os.environ.get('SAMP','6')); sc.cycles.device = 'CPU'
 try: sc.cycles.use_denoising = False
 except Exception: pass
 w = bpy.data.worlds.new('w'); w.use_nodes = True
-w.node_tree.nodes['Background'].inputs[0].default_value = (0.55, 0.58, 0.62, 1); w.node_tree.nodes['Background'].inputs[1].default_value = 0.6
+w.node_tree.nodes['Background'].inputs[0].default_value = (0.55, 0.58, 0.62, 1); w.node_tree.nodes['Background'].inputs[1].default_value = float(os.environ.get('WORLD','0.6'))
 sc.world = w
-sun = bpy.data.lights.new('s', 'SUN'); sun.energy = 1.5; so = bpy.data.objects.new('s', sun); sc.collection.objects.link(so)
+sun = bpy.data.lights.new('s', 'SUN'); sun.energy = float(os.environ.get('SUN','1.5')); so = bpy.data.objects.new('s', sun); sc.collection.objects.link(so)
 so.rotation_euler = (math.radians(50), 0, math.radians(30))
 cam = bpy.data.cameras.new('c'); cam.lens = 45
 co = bpy.data.objects.new('c', cam); sc.collection.objects.link(co); sc.camera = co
