@@ -168,10 +168,10 @@ def paint_armor(R, regs, plate_scale=3.4):
     rowf = (v * 38.0) % 1.0
     groove = smoothstep(0.0, 0.06, rowf) * smoothstep(0.0, 0.06, 1 - rowf)
     cf = (u * (80.0 * plate_scale / 3.4)) % 1.0
-    cord = smoothstep(0.32, 0.26, np.abs(cf - 0.5))
+    cord = smoothstep(0.26, 0.20, np.abs(cf - 0.5))
     braid = 0.5 + 0.5 * np.sin(v * 900.0 + np.sin(u * 40.0) * 2.0)
     crimson = mix(col(0.22, 0.012, 0.02), col(0.46, 0.05, 0.05), braid * 0.65 + 0.35 * fine)
-    lace = cord * groove * smoothstep(0.35, 0.55, noise3(p * 0.15, 4) + 0.35)      # not every plate is laced
+    lace = cord * groove * (0.82 + 0.18 * fine)
     alb = mix(lac, crimson, lace * 0.92)
     rough = 0.30 + 0.22 * fine - 0.05 * big
     metal = np.full_like(rough, 0.18)
@@ -443,7 +443,7 @@ def texture_scene(arm, out_dir, scale=1.0, quality=90, only=None):
         alb = np.where(R.mask[..., None], alb, np.array([0.1, 0.1, 0.1], np.float32))
         aimg = _save_img(f'{on}_albedo', alb, os.path.join(out_dir, f'{on}_albedo.jpg'), True, quality)
         oimg = _save_img(f'{on}_orm', orm, os.path.join(out_dir, f'{on}_orm.jpg'), False, quality)
-        nimg = _save_img(f'{on}_normal', nrm, os.path.join(out_dir, f'{on}_normal.png'), False, quality)
+        nimg = _save_img(f'{on}_normal', nrm, os.path.join(out_dir, f'{on}_normal.jpg'), False, 95)
         mat = make_material(f'tex_{on}', aimg, oimg, nimg)
         obj.data.materials.clear(); obj.data.materials.append(mat)
         for p in obj.data.polygons: p.material_index = 0
