@@ -12,3 +12,13 @@ Hips lead the cut by 35 ms, spine 18 ms, then chest/arms/wrists; right foot step
 Notes: the FBX had no katana (only two placeholder cylinders, removed) and no embedded textures,
 so the katana is modelled procedurally and materials are untextured. Original character meshes,
 rig and weights are untouched.
+
+## v2 – clipping fix
+- Sword now sits at the belly front (tsuba ~10 cm left of centre) so the right hand reaches it without the
+  forearm passing through the armor; after the draw the scabbard settles at the left hip, and returns for the sheathe.
+- Per-frame search (`optimize_swivel`) over elbow swivel, wrist twist, hand-path lift and clavicle follow, scored on the
+  *deformed* meshes (`clips.py`, BVH triangle overlap), then Viterbi-smoothed in time.
+- Checks: `clipcheck.py` (triangle-overlap table), `breakdown.py` (which meshes), `depthcheck.py` (penetration depth, cm).
+  Result: arm-arm, hand-hand, hand-armor overlaps are 0 except a short graze near t=0.9 s; remaining arm-vs-inner-cloth
+  overlap is <= 1.7 cm (the bind pose itself has 1.3 cm there), hidden under the armor.
+- Higher-res katana/saya, 60 fps baked on every frame, FBX 4.3 MB (limit 20 MB).

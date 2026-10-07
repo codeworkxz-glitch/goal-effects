@@ -17,8 +17,8 @@ so.rotation_euler = (math.radians(50), 0, math.radians(30))
 cam = bpy.data.cameras.new('c'); cam.lens = 45
 co = bpy.data.objects.new('c', cam); sc.collection.objects.link(co); sc.camera = co
 dirs = {'front': (0, -1), 'side': (1, 0), 'three': (0.8, -0.6)}[view]
-co.location = (dirs[0] * 3.6, dirs[1] * 3.6, 1.1)
-co.rotation_euler = (Vector((0, 0, 0.85)) - co.location).to_track_quat('-Z', 'Y').to_euler()
+import os; CD=float(os.environ.get('CAMD','3.6')); CZ=float(os.environ.get('CAMZ','1.1')); co.location = (dirs[0] * CD, dirs[1] * CD, CZ)
+co.rotation_euler = (Vector((0, 0, float(os.environ.get('LOOKZ','0.85')))) - co.location).to_track_quat('-Z', 'Y').to_euler()
 sc.render.resolution_x = 480; sc.render.resolution_y = 600
 ims = []
 for t in times:

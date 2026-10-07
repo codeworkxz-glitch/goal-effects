@@ -15,7 +15,8 @@ What it does
 All pose maths happens in armature space of the FBX rig:
     +Y up, +Z forward (character faces +Z), +X = character's LEFT   (units: cm)
 """
-import bpy, bmesh, sys, os, math, argparse
+import bpy, bmesh, sys, os, math, argparse, bisect
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from mathutils import Matrix, Vector, Quaternion, Euler
 
 FPS = 60
@@ -23,8 +24,8 @@ DUR = 2.9
 N = int(round(DUR * FPS)) + 1
 BLADE = 66.0          # nagasa (cm)
 TSUKA = 27.0
-R_GRIP_U = 8.0        # right fist centre, cm behind the tsuba
-L_GRIP_U = 20.0       # left fist centre, cm behind the tsuba
+R_GRIP_U = 6.5        # right fist centre, cm behind the tsuba
+L_GRIP_U = 22.5       # left fist centre, cm behind the tsuba
 
 # ----------------------------------------------------------------------------------
 # small maths helpers
@@ -135,8 +136,11 @@ FEET = {
 }
 
 # saya (scabbard). Calm: worn on the left hip. Draw: the left hand swings it back/out.
-SAYA_CALM_M = Vector((28, 24, 12))                       # mouth, hip-local (armature rest coords rel. to world)
-SAYA_CALM_D = Vector((-0.20, -0.28, -0.94)).normalized()
+SAYA_CALM_M = Vector((4, 36, 38))                       # mouth, hip-local (armature rest coords rel. to world)
+SAYA_CALM_D = Vector((0.50, -0.22, -0.85)).normalized()
+SAYA_HIP_M = Vector((30, 26, 16))                        # where the scabbard hangs once the left hand lets go
+SAYA_HIP_D = Vector((0.18, -0.30, -0.93)).normalized()
+SAYA_H = [(0, 0), (1.2, 0), (1.42, 1), (2.12, 1), (2.45, 0), (2.9, 0)]
 SAYA_DRAW_M_C = Vector((30, -26, -6))                    # chest-local, mouth at end of draw
 SAYA_DRAW_D_C = None                                     # computed from grip exit point
 RIGHT_EXIT_C = Vector((-8, -8, 32))                      # chest-local right-hand grip at full draw
@@ -152,24 +156,26 @@ V = Vector
 SWORD_FREE = [
     (1.15, 'saya'),
     (1.30, V((-10, 16, 26)), V((0.15, 0.20, -0.97)), V((0, 1, 0))),
-    (1.45, V((-20, 46, 14)), V((-0.22, 0.88, -0.42)), V((0.5, 0.0, 1))),
-    (1.52, V((-24, 50, 8)), V((-0.32, 0.86, -0.40)), V((0.5, 0.0, 1))),
-    (1.585, V((-14, 38, 28)), V((-0.10, 0.55, 0.83)), V((0.6, -0.4, 0.4))),
-    (1.62, V((-6, 24, 38)), V((0.15, 0.05, 0.99)), V((0.8, -0.5, 0.1))),
-    (1.655, V((4, 10, 40)), V((0.50, -0.35, 0.78)), V((0.8, -0.6, 0.0))),
-    (1.69, V((10, 2, 40)), V((0.70, -0.50, 0.50)), V((0.8, -0.6, 0.0))),
-    (1.76, V((9, 4, 38)), V((0.64, -0.44, 0.62)), V((0.8, -0.6, 0.0))),
-    (2.0, V((9, 5, 37)), V((0.62, -0.42, 0.66)), V((0.8, -0.6, 0.0))),
+    (1.45, V((-18, 46, 26)), V((-0.20, 0.88, -0.42)), V((0.5, 0.0, 1))),
+    (1.52, V((-22, 50, 18)), V((-0.32, 0.86, -0.40)), V((0.5, 0.0, 1))),
+    (1.585, V((-14, 38, 26)), V((-0.10, 0.55, 0.83)), V((0.6, -0.4, 0.4))),
+    (1.62, V((-4, 18, 38)), V((0.15, 0.05, 0.99)), V((0.8, -0.5, 0.1))),
+    (1.655, V((4, -2, 38)), V((0.45, -0.45, 0.77)), V((0.8, -0.6, 0.0))),
+    (1.69, V((8, -6, 38)), V((0.40, -0.62, 0.67)), V((0.8, -0.6, 0.0))),
+    (1.76, V((6, -2, 38)), V((0.35, -0.70, 0.60)), V((0.8, -0.6, 0.0))),
+    (2.0, V((6, -2, 38)), V((0.35, -0.70, 0.60)), V((0.8, -0.6, 0.0))),
     (2.15, V((-6, 14, 30)), V((0.90, -0.30, 0.20)), V((0.2, 0.0, 1))),
     (2.30, 'saya'),
 ]
 
 # hand blends: grip weight on the sword (right), left hand mode 0=saya 1=tsuka
 GRIP_R = [(0, 0), (0.35, 0), (0.70, 1), (2.9, 1)]
-LEFT_ON_TSUKA = [(0, 0), (1.15, 0), (1.40, 1), (2.0, 1), (2.25, 0), (2.9, 0)]
+LEFT_ON_TSUKA = [(0, 0), (1.15, 0), (1.40, 1), (1.74, 1), (1.98, 0), (2.9, 0)]
 CURL_R = [(0, 0.15), (0.35, 0.15), (0.70, 1), (2.9, 1)]
 CURL_L = [(0, 0.8), (2.9, 0.8)]
-R_FREE_WRIST = Vector((-25, 17, 9))        # relaxed right hand next to the thigh
+SH_FOLLOW = 0.22                             # how much the clavicle chases the hand
+L_SAYA_U = 5.0                            # left fist position on the saya, cm in front of the tsuba
+R_FREE_WRIST = Vector((-41, 24, 3))        # relaxed right hand next to the thigh
 
 
 # ----------------------------------------------------------------------------------
@@ -249,7 +255,7 @@ def build_katana(rig):
     # ---- sword (blade + habaki + tsuba + tsuka)
     bm = bmesh.new()
     w, t = 3.0, 0.75
-    segs = 14
+    segs = 40
     rings = []
     for i in range(segs + 1):
         s = i / segs
@@ -266,11 +272,11 @@ def build_katana(rig):
     loft(bm, [ellipse_ring(-0.6, 4.3, 3.9, 20), ellipse_ring(0.0, 4.3, 3.9, 20), ellipse_ring(0.5, 4.2, 3.8, 20)], 1)   # tsuba
     rings = []
     L = TSUKA
-    for i in range(0, 41):
-        z = -L * i / 40.0
+    for i in range(0, 81):
+        z = -L * i / 80.0
         bump = 0.06 if (i % 2) else 0.0
-        bell = 1.0 + 0.10 * math.sin(math.pi * i / 40.0)
-        rings.append(ellipse_ring(z - 0.6, (1.75 + bump) * bell, (1.35 + bump) * bell, 12))
+        bell = 1.0 + 0.10 * math.sin(math.pi * i / 80.0)
+        rings.append(ellipse_ring(z - 0.6, (1.75 + bump) * bell, (1.35 + bump) * bell, 20))
     loft(bm, rings, 3)                                                                              # tsuka (ito wrap)
     loft(bm, [ellipse_ring(-L - 0.6, 1.9, 1.5, 12), ellipse_ring(-L - 1.6, 1.9, 1.5, 12), ellipse_ring(-L - 2.1, 1.0, 0.8, 12)], 2)  # kashira
     sword = bpy.data.meshes.new('Katana'); bm.to_mesh(sword); bm.free()
@@ -278,12 +284,12 @@ def build_katana(rig):
     bm = bmesh.new()
     rings = []
     SL = BLADE + 6
-    for i in range(0, 25):
-        s = i / 24.0
+    for i in range(0, 49):
+        s = i / 48.0
         z = 1.0 + SL * s
         rx = 2.15 - 0.55 * s; ry = 1.55 - 0.3 * s
         if s > 0.97: rx *= 0.5; ry *= 0.5
-        rings.append(ellipse_ring(z, rx, ry, 14, ox=1.5 * 4 * s * (1 - s) * 0.95))
+        rings.append(ellipse_ring(z, rx, ry, 24, ox=1.5 * 4 * s * (1 - s) * 0.95))
     loft(bm, rings, 4)
     loft(bm, [ellipse_ring(0.8, 2.5, 1.9, 14), ellipse_ring(2.6, 2.5, 1.9, 14)], 2)                   # koiguchi collar
     loft(bm, [ellipse_ring(SL - 0.5, 0.65, 0.5, 8), ellipse_ring(SL + 0.9, 0.5, 0.4, 8)], 2)            # kojiri cap
@@ -358,7 +364,10 @@ class Solver:
         M = Matrix(((E.x, N.x, D.x), (E.y, N.y, D.y), (E.z, N.z, D.z)))
         return P, M
 
-    def solve(self, t, ctx_cache):
+    def solve(self, t, ctx_cache, opt=None):
+        opt = opt or {}
+        sw = opt.get('swiv', (0.0, 0.0)); twv = opt.get('twist', (0.0, 0.0)); lfv = opt.get('lift', (0.0, 0.0))
+        shf = opt.get('shf', (SH_FOLLOW, SH_FOLLOW))
         rig = self.rig
         rh, rr = rig.rh, rig.rr
         hipP, spP, chP, hdP = self.torso(t)
@@ -398,8 +407,9 @@ class Solver:
         # ---------- saya
         sS = pchip(SAYA_S, t)
         sS = smooth(sS) if 0 < sS < 1 else sS
-        Mh = POS['HIP'] + Dh @ (SAYA_CALM_M - rh['HIP'])
-        Dh_s = Dh @ SAYA_CALM_D
+        hh = smooth(pchip(SAYA_H, t))
+        Mh = POS['HIP'] + Dh @ (lerp(SAYA_CALM_M, SAYA_HIP_M, hh) - rh['HIP'])
+        Dh_s = Dh @ lerp(SAYA_CALM_D, SAYA_HIP_D, hh).normalized()
         Mc = c2w(SAYA_DRAW_M_C - rh['chest']) if False else Pchest + Dchest @ SAYA_DRAW_M_C
         Dc_s = Dchest @ self.exit_D_c
         Msaya = lerp(Mh, Mc, sS)
@@ -468,7 +478,7 @@ class Solver:
         gR = smooth(pchip(GRIP_R, t))
         Gr_sword = P - D * R_GRIP_U
         Gl_tsuka = P - D * L_GRIP_U
-        Gl_saya = Msaya + Dsaya * 7.0
+        Gl_saya = Msaya + Dsaya * L_SAYA_U
         bL = smooth(pchip(LEFT_ON_TSUKA, t))
         sh_pos = {}
 
@@ -482,7 +492,7 @@ class Solver:
             A0 = (Dchest @ (wr - rh[f'{s}_arm']))
             A1 = (wrist_t - S0)
             q = rot_min(A0, A1)
-            Dsh = slerp3(I3, q, 0.22) @ Dchest
+            Dsh = slerp3(I3, q, shf[0 if s == 'L' else 1]) @ Dchest
             place(sh, Dabs=Dsh)
             return Dsh
 
@@ -494,6 +504,7 @@ class Solver:
             r = (G - shoulder_pos); r = r - A * r.dot(A)
             if r.length < 1e-3: r = fhint - A * fhint.dot(A)
             r.normalize()
+            r = rot_axis(A, twv[0 if s == 'L' else 1]) @ r
             # rest frame (z, p_perp, z x p_perp) -> target frame (A, r, A x r)
             B0 = Matrix((z, p_perp, z.cross(p_perp))).transposed()
             B1 = Matrix((A, r, A.cross(r))).transposed()
@@ -502,15 +513,16 @@ class Solver:
 
         # right side
         sR = Vector((0, 0, 0))
+        liftR = Dchest @ Vector((0, 8, 12)) * (lfv[1] * 4 * gR * (1 - gR))
         DshR_tmp = shoulder('R', lerp(R_FREE_WRIST, Gr_sword, gR))
         armR_head = POS['R_shoulder'] + DEL['R_shoulder'] @ (rh['R_arm'] - rh['R_shoulder'])
         DR_g, WR_g = grip_pose('R', Gr_sword, D, armR_head, Vector((0, -1, 0.3)))
         DR_free = DEL['R_shoulder']
-        Wr = lerp(R_FREE_WRIST, WR_g, gR)
+        Wr = lerp(R_FREE_WRIST, WR_g, gR) + liftR
         Dhand_R = slerp3(DR_free, DR_g, gR)
         # left side
         Gl_s = Gl_saya; Gl_t = Gl_tsuka
-        G_l = lerp(Gl_s, Gl_t, bL)
+        G_l = lerp(Gl_s, Gl_t, bL) + Dchest @ Vector((0, 8, 12)) * (lfv[0] * 4 * bL * (1 - bL))
         A_l = (lerp(Dsaya, D, bL)).normalized()
         DshL_tmp = shoulder('L', G_l)
         armL_head = POS['L_shoulder'] + DEL['L_shoulder'] @ (rh['L_arm'] - rh['L_shoulder'])
@@ -519,6 +531,9 @@ class Solver:
         def solve_arm(s, wrist, Dhand, pole):
             a, b = self.arm_len[s]
             Sh = POS[f'{s}_shoulder'] + DEL[f'{s}_shoulder'] @ (rh[f'{s}_arm'] - rh[f'{s}_shoulder'])
+            ax_ = (wrist - Sh)
+            if ax_.length > 1e-4:
+                pole = rot_axis(ax_.normalized(), sw[0 if s == 'L' else 1]) @ pole
             elbow, wr_pos, clamp = two_bone(Sh, a, b, wrist, pole)
             if clamp and (wrist - Sh).length - (a + b) > 2.0:
                 self.warn.append((round(t, 3), s, round((wrist - Sh).length - (a + b), 1)))
@@ -611,10 +626,11 @@ class Solver:
         Pchest = Pspine + Dspine @ (rig.rh['chest'] - rig.rh['spine'])
         sS = pchip(SAYA_S, tk)
         sS = smooth(sS) if 0 < sS < 1 else sS
-        Mh = Phip + Dh @ (SAYA_CALM_M - rig.rh['HIP'])
+        hh = smooth(pchip(SAYA_H, tk))
+        Mh = Phip + Dh @ (lerp(SAYA_CALM_M, SAYA_HIP_M, hh) - rig.rh['HIP'])
         Mc = Pchest + Dchest @ SAYA_DRAW_M_C
         M = lerp(Mh, Mc, sS)
-        D = lerp(Dh @ SAYA_CALM_D, Dchest @ self.exit_D_c, sS).normalized()
+        D = lerp(Dh @ lerp(SAYA_CALM_D, SAYA_HIP_D, hh).normalized(), Dchest @ self.exit_D_c, sS).normalized()
         w = pchip(WITHDRAW, tk) if tk <= T_EXIT else pchip(INSERT, tk)
         P = M - D * w
         Hn = Vector((0, 1, 0)) * (1 - sS) + Dchest @ Vector((0.2, 1, 0.1)) * sS
@@ -627,7 +643,99 @@ class Solver:
 # ----------------------------------------------------------------------------------
 # baking
 # ----------------------------------------------------------------------------------
-def bake(rig, solver, katana_objs):
+
+def rig_tables(rig, arm):
+    allb = rig.order + ['katana_root', 'saya_root']
+    parent = dict(rig.parent); parent['katana_root'] = None; parent['saya_root'] = None
+    rest = dict(rig.rest)
+    for nm in ('katana_root', 'saya_root'):
+        rest[nm] = arm.data.bones[nm].matrix_local.copy()
+    rr = {k: m.to_3x3() for k, m in rest.items()}
+    return allb, parent, rest, rr
+
+
+def set_pose(arm, tabs, POS, DEL, Pk, Fk, Ms, Fs):
+    allb, parent, rest, rr = tabs
+    POS = dict(POS); DEL = dict(DEL)
+    POS['katana_root'] = Pk; DEL['katana_root'] = Fk
+    POS['saya_root'] = Ms; DEL['saya_root'] = Fs
+    M = {}
+    for b in allb:
+        R4 = (DEL[b] @ rr[b]).to_4x4(); R4.translation = POS[b]
+        M[b] = R4
+        p = parent[b]
+        base = (M[p] @ rest[p].inverted() @ rest[b]) if p else rest[b]
+        arm.pose.bones[b].matrix_basis = base.inverted() @ R4
+    bpy.context.view_layer.update()
+
+
+def optimize_swivel(rig, solver, arm, step=3, quick=False):
+    """per-frame search over (elbow swivel, wrist twist, path lift) against the real deformed meshes,
+    then Viterbi smoothing across time."""
+    import clips, itertools
+    scorer = clips.Scorer()
+    tabs = rig_tables(rig, arm)
+    SW = (-90, -60, -30, 0, 30, 60, 90)
+    TW = (-50, -25, 0, 25, 50)
+    LF = (0.0, 1.0)
+    if quick:
+        SW = (-80, -40, 0, 40, 80); TW = (-45, 0, 45); LF = (0.0, 1.0); step = 4
+    SF = (0.1, 0.4, 0.7)
+    if quick: SF = (0.15, 0.55)
+    cands = list(itertools.product(range(len(SW)), range(len(TW)), range(len(LF)), range(len(SF))))
+    idx = list(range(0, N, step))
+    if idx[-1] != N - 1: idx.append(N - 1)
+    cache = {}
+    cost = {'L': [], 'R': []}
+    for i in idx:
+        t = i / FPS
+        rowL, rowR = [], []
+        for (a_, b_, c_, d_) in cands:
+            o = {'swiv': (SW[a_],) * 2, 'twist': (TW[b_],) * 2, 'lift': (LF[c_],) * 2, 'shf': (SF[d_],) * 2}
+            POS, DEL, (Pk, Fk), (Ms, Ds, Fs) = solver.solve(t, cache, o)
+            set_pose(arm, tabs, POS, DEL, Pk, Fk, Ms, Fs)
+            T = scorer.trees(bpy.context.evaluated_depsgraph_get())
+            pen = abs(SW[a_]) * 0.03 + abs(TW[b_]) * 0.03 + LF[c_] * 1.0 + abs(SF[d_] - 0.22) * 2
+            rowL.append(scorer.side_cost(T, 'L') + pen)
+            rowR.append(scorer.side_cost(T, 'R') + pen)
+        cost['L'].append(rowL); cost['R'].append(rowR)
+        print('  opt frame', i, 'minL', min(rowL), 'minR', min(rowR), flush=True)
+    out = {'swiv': {}, 'twist': {}, 'lift': {}, 'shf': {}}
+    lam = (5.0, 3.0, 4.0)
+    K = len(cands)
+    trans = [[lam[0] * abs(cands[j][0] - cands[jp][0]) + lam[1] * abs(cands[j][1] - cands[jp][1]) + lam[2] * 2 * abs(cands[j][2] - cands[jp][2]) + 6.0 * abs(cands[j][3] - cands[jp][3])
+              for jp in range(K)] for j in range(K)]
+    for s in 'LR':
+        C = cost[s]; n = len(C)
+        best = C[0][:]; back = []
+        for f in range(1, n):
+            nb = []; bk = []
+            for j in range(K):
+                tj = trans[j]
+                m = min(range(K), key=lambda q: best[q] + tj[q])
+                nb.append(C[f][j] + best[m] + tj[m]); bk.append(m)
+            best = nb; back.append(bk)
+        j = min(range(K), key=lambda q: best[q]); path = [j]
+        for bk in reversed(back):
+            j = bk[j]; path.append(j)
+        path.reverse()
+        print('opt', s, 'residual', sum(C[f][path[f]] for f in range(n)))
+        for d, vals in enumerate((SW, TW, LF, SF)):
+            ang = [vals[cands[j][d]] for j in path]
+            full = []
+            for i in range(N):
+                f = min(max(bisect.bisect_right(idx, i) - 1, 0), n - 2)
+                u = (i - idx[f]) / float(idx[f + 1] - idx[f])
+                full.append(lerp(ang[f], ang[f + 1], u))
+            sm = []
+            for i in range(N):
+                w = [full[min(max(i + dd, 0), N - 1)] for dd in range(-3, 4)]
+                sm.append(sum(w) / len(w))
+            out[('swiv', 'twist', 'lift', 'shf')[d]][s] = sm
+    return out
+
+
+def bake(rig, solver, katana_objs, swt=None):
     arm = rig.obj
     scene = bpy.context.scene
     scene.render.fps = FPS
@@ -636,7 +744,7 @@ def bake(rig, solver, katana_objs):
     frames = []
     for i in range(N):
         t = i / FPS
-        POS, DEL, (Pk, Fk), (Ms, Ds, Fs) = solver.solve(t, cache)
+        POS, DEL, (Pk, Fk), (Ms, Ds, Fs) = solver.solve(t, cache, {k: (v['L'][i], v['R'][i]) for k, v in swt.items()} if swt else None)
         # extra bones: katana / saya
         POS['katana_root'] = Pk; DEL['katana_root'] = Fk
         POS['saya_root'] = Ms; DEL['saya_root'] = Fs
@@ -720,11 +828,23 @@ def export_glb(arm, path, tex_dir=None):
     print('GLB size MB', os.path.getsize(path) / 1e6)
 
 
+def export_fbx(path):
+    bpy.ops.object.select_all(action='SELECT')
+    bpy.ops.export_scene.fbx(filepath=path, use_selection=True, object_types={'ARMATURE', 'MESH'}, add_leaf_bones=False,
+                             bake_anim=True, bake_anim_use_all_bones=True, bake_anim_use_nla_strips=False,
+                             bake_anim_use_all_actions=False, bake_anim_force_startend_keying=True, bake_anim_step=1.0,
+                             bake_anim_simplify_factor=0.0, apply_scale_options='FBX_SCALE_NONE', path_mode='AUTO',
+                             embed_textures=False, mesh_smooth_type='FACE', use_armature_deform_only=False)
+    print('FBX size MB', os.path.getsize(path) / 1e6)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('fbx'); ap.add_argument('out')
     ap.add_argument('--textures', default=None)
     ap.add_argument('--no-export', action='store_true')
+    ap.add_argument('--no-optimize', action='store_true')
+    ap.add_argument('--quick', action='store_true')
     a = ap.parse_args(sys.argv[sys.argv.index('--') + 1:] if '--' in sys.argv else sys.argv[1:])
     os.makedirs(a.out, exist_ok=True)
     arm = load(a.fbx)
@@ -733,7 +853,11 @@ def main():
     rig = Rig(arm)       # refresh with new bones present (order list gets the extras, harmless)
     rig.order = [b for b in rig.order if b not in ('katana_root', 'saya_root')]
     solver = Solver(rig)
-    moving, frames = bake(rig, solver, objs)
+    swt = None
+    if not a.no_optimize:
+        swt = optimize_swivel(rig, solver, arm, quick=a.quick)
+        arm.animation_data_clear() if arm.animation_data else None
+    moving, frames = bake(rig, solver, objs, swt)
     print('moving bones:', len(moving), ' frames:', N)
     if solver.warn:
         seen = {}
@@ -741,6 +865,7 @@ def main():
         for s, v in seen.items(): print('REACH WARN', s, v[:6], '... n=', len(v))
     bpy.ops.wm.save_as_mainfile(filepath=os.path.join(a.out, 'reality_cut.blend'))
     if not a.no_export:
+        export_fbx(os.path.join(a.out, 'Samurai_RealityCut.fbx'))
         export_glb(arm, os.path.join(a.out, 'reality_cut.glb'), a.textures)
     return arm
 
