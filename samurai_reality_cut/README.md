@@ -37,3 +37,13 @@ rig and weights are untouched.
 
 ## Viewer note
 Embedded-texture FBX showed grey in some viewers, so the delivery is now `Samurai_RealityCut_textured.zip` (FBX + ./textures, relative paths) and `Samurai_RealityCut_colored.fbx` (flat colours + baked vertex colours, no texture files). Built with `export_variants.py`.
+
+## v4 – 5 s, flat colours (Roblox-friendly)
+- Timeline stretched to 5.0 s (301 frames @ 60 fps) with a smooth time-warp (`KNOTS`): slow breathing calm, slow grip + draw,
+  a long coil before the cut, the slash itself still ~0.17 s, a longer hold, slow sheathe + click.
+- Extra detail: lobed tsuba + gold seppa/fuchi/menuki and ito bands on the katana, gold bands + kurikata on the saya,
+  spring-driven secondary motion on skirt panels and belt cords (`secondary_motion`), `post_skirts.py` swings the panels
+  clear of the thighs/greaves.
+- Colours only, no image textures: `color_only.py` paints red-lacquer armour with gold trim, slate-blue lattice cloth,
+  tan leather greaves/gloves, gold crest, skin face; flat class materials + face-flat vertex colours.
+- Final file: `Samurai_RealityCut_colored.fbx` (5.1 MB).

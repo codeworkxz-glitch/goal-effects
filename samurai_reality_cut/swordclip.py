@@ -7,7 +7,7 @@ def tree(dg,n):
     ob=bpy.data.objects[n].evaluated_get(dg); me=ob.to_mesh(); mw=ob.matrix_world
     t=BVHTree.FromPolygons([mw@v.co for v in me.vertices],[tuple(p.vertices) for p in me.polygons]); ob.to_mesh_clear(); return t
 print('t     Katana x [head helmet mask armo neiyi prot gloves]   Saya x [same]')
-for i in range(0,176,6):
+for i in range(0,302,10):
     sc.frame_set(i+1); dg=bpy.context.evaluated_depsgraph_get()
     T={n:tree(dg,n) for n in names}
     k=[len(T['Katana'].overlap(T[n])) for n in names[2:]]
