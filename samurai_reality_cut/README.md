@@ -22,3 +22,15 @@ rig and weights are untouched.
   Result: arm-arm, hand-hand, hand-armor overlaps are 0 except a short graze near t=0.9 s; remaining arm-vs-inner-cloth
   overlap is <= 1.7 cm (the bind pose itself has 1.3 cm there), hidden under the armor.
 - Higher-res katana/saya, 60 fps baked on every frame, FBX 4.3 MB (limit 20 MB).
+
+## v3 – arm anatomy + textures
+- Arm solver is now anatomical: the elbow hinges in the shoulder-elbow-wrist plane (humerus roll solved to match),
+  forearm takes pronation up to 85 deg, remaining wrist twist/deviation is limited, fingers wrap the handle radius.
+  Per frame, swivel / wrist twist / hand-flip / hand path / clavicle follow are searched against the deformed meshes
+  and joint-limit costs (4 parallel workers), then Viterbi-smoothed in time. `report_anatomy` prints the joint angles.
+- The sword is raised upright in front of the chest between draw and guard (no head/back-armor clipping); the
+  katana/scabbard never intersect the armor, head or sleeves (only the gripping fingers touch the handle).
+- Procedural PBR textures (`texturing.py`, 2K albedo / ORM / normal) painted through the original UV atlas.
+- Checks: `depthcheck.py` (worst arm-into-body depth 1.3 cm; bind pose itself is 1.1-1.3 cm), `swordclip.py`-style
+  sword overlaps are 0, `multiview.py` renders front/side/back/top.
+- FBX 18.9 MB (embedded textures).
