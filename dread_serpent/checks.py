@@ -14,7 +14,8 @@ import bpy, sys, os, math
 import numpy as np
 from mathutils.bvhtree import BVHTree
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import choreo as C
+import importlib
+C = importlib.import_module(os.environ.get('SERPENT_CHOREO', 'choreo'))
 
 argv = sys.argv[sys.argv.index('--') + 1:] if '--' in sys.argv else sys.argv[1:]
 bpy.ops.wm.open_mainfile(filepath=argv[0])
@@ -42,10 +43,12 @@ for o in objs:
     rl = np.linalg.norm(rest[edges[:, 0]] - rest[edges[:, 1]], axis=1)
     info[o.name] = dict(polys=polys, sec=sec, arm=pa > 0.5, edges=edges, rl=rl, body=o.name.startswith('DreadSerpent_Body'))
 
-rim_R = (C.RIM_R + 0.45); tube = 0.45
+HAS_RIM = hasattr(C, 'RIM_R')
+rim_R = (C.RIM_R + 0.45) if HAS_RIM else 1e6; tube = 0.45
+prevV = None; jump_max = 0.0
 rows = []
 sc = bpy.context.scene
-worst = dict(self=0, arm=0, rim_in=0, rim_min=1e9, bb=-1e9, stretch=0, squash=1e9)
+worst = dict(self=0, arm=0, rim_in=0, rim_min=1e9, bb=-1e9, stretch=0, squash=1e9, jump=0)
 for f in range(0, C.NFRAMES, step):
     sc.frame_set(f)
     dg = bpy.context.evaluated_depsgraph_get()
@@ -89,16 +92,20 @@ for f in range(0, C.NFRAMES, step):
             if s_ * SEC > 26: continue
             n_arm += len(TA.overlap(T[s_]))
     V = np.concatenate(allv)
+    # largest per-vertex move since the previous checked frame (units per frame): pops / teleports show here
+    jump = float(np.linalg.norm(V - prevV, axis=1).max() / step) if prevV is not None else 0.0
+    prevV = V
+    worst['jump'] = max(worst['jump'], jump)
     rho = np.sqrt(V[:, 0] ** 2 + V[:, 1] ** 2)
     dtube = np.sqrt((rho - rim_R) ** 2 + V[:, 2] ** 2) - tube
-    band = (V[:, 2] > -7) & (V[:, 2] < 41) & (np.abs(V[:, 0]) < 41)
+    band = ((V[:, 2] > -7) & (V[:, 2] < 41) & (np.abs(V[:, 0]) < 41)) if HAS_RIM else (V[:, 2] > 0)
     bb = V[band, 1].max() if band.any() else -1e9
-    rows.append((f, f / C.FPS, n_self, n_arm, int((dtube < 0).sum()), float(dtube.min()), float(bb), st_max, st_min, pairs[:4]))
+    rows.append((f, f / C.FPS, n_self, n_arm, int((dtube < 0).sum()), float(dtube.min()), float(bb), st_max, st_min, pairs[:4], jump))
     worst['self'] = max(worst['self'], n_self); worst['arm'] = max(worst['arm'], n_arm)
     worst['rim_in'] = max(worst['rim_in'], int((dtube < 0).sum())); worst['rim_min'] = min(worst['rim_min'], float(dtube.min()))
     worst['bb'] = max(worst['bb'], float(bb)); worst['stretch'] = max(worst['stretch'], st_max); worst['squash'] = min(worst['squash'], st_min)
 
-print(' frame    t   self  arm  rimIn  rimGap(u)  maxY(u)  stretch99.9  squash0.1  pairs')
+print(' frame    t   self  arm  rimIn  rimGap(u)  maxY(u)  stretch99.9  squash0.1  jump(u/f)  pairs')
 for r in rows:
-    print(f'{r[0]:5d} {r[1]:5.2f} {r[2]:6d} {r[3]:4d} {r[4]:6d} {r[5]:9.2f} {r[6]:8.2f} {r[7]:8.2f} {r[8]:8.2f}  {r[9]}')
-print('WORST', worst, ' backboard face at Y=%.1f units, 1 unit = %.2f cm' % (C.BACKBOARD_Y, K * 100))
+    print(f'{r[0]:5d} {r[1]:5.2f} {r[2]:6d} {r[3]:4d} {r[4]:6d} {r[5]:9.2f} {r[6]:8.2f} {r[7]:8.2f} {r[8]:8.2f} {r[10]:8.2f}  {r[9]}')
+print('WORST', worst, (' backboard face at Y=%.1f units,' % C.BACKBOARD_Y) if HAS_RIM else '', '1 unit = %.2f cm' % (K * 100))

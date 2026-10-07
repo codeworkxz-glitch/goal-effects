@@ -17,7 +17,9 @@ from mathutils import Matrix, Vector, Quaternion
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-import choreo as C
+import importlib
+C = importlib.import_module(os.environ.get('SERPENT_CHOREO', 'choreo'))
+OUT_NAME = getattr(C, 'OUT_NAME', 'DreadSerpent_LegendaryGoal')
 
 K = C.METRES_PER_UNIT
 L_BONE = 2.0
@@ -371,7 +373,7 @@ def rot_about(axis, ang):
     return np.array(Matrix.Rotation(ang, 3, Vector(axis)))
 
 
-def jaw_open(t):
+def _jaw_open_default(t):
     """degrees"""
     k = [(0.00, 6), (0.12, 30), (0.45, 34), (0.80, 14), (1.30, 8), (1.75, 6), (2.10, 10), (2.55, 16),
          (2.85, 17), (3.10, 44), (3.20, 46), (3.45, 40), (3.70, 18), (4.20, 10)]
@@ -379,7 +381,7 @@ def jaw_open(t):
     return float(C.pchip(ts, vs)(min(max(t, 0), 4.2)))
 
 
-def arm_pose(t):
+def _arm_pose_default(t):
     """(tuck, spread, reach) weights, each 0..1: tucked while travelling and striking, opened out to the
     sides while staring."""
     ss = C.smootherstep
@@ -387,7 +389,7 @@ def arm_pose(t):
     return float(1 - spread), float(spread), 0.0
 
 
-def look_weight(t):
+def _look_weight_default(t):
     return float(C.smootherstep(C.T_REAR_END - 0.40, C.T_REAR_END + 0.05, t) * (1 - C.smootherstep(C.T_STRIKE, C.T_STRIKE_HIT - 0.04, t)))
 
 
@@ -396,6 +398,11 @@ def ripple(t, u):
     a = C.smootherstep(C.T_REAR_END - 0.3, C.T_REAR_END + 0.2, t) * (1 - C.smootherstep(C.T_STRIKE - 0.1, C.T_STRIKE + 0.05, t))
     env = C.smoothstep(14.0, 30.0, u) * (0.55 + 1.6 * C.smoothstep(95.0, C.U_TAIL, u))
     return a * env * np.sin(2 * np.pi * (1.15 * t) - 2 * np.pi * u / 38.0)
+
+
+jaw_open = getattr(C, 'jaw_open', None) or _jaw_open_default
+arm_pose = getattr(C, 'arm_pose', None) or _arm_pose_default
+look_weight = getattr(C, 'look_weight', None) or _look_weight_default
 
 
 def solve_frame(t):
@@ -408,9 +415,12 @@ def solve_frame(t):
     Dj = C.sample_vec(D, s, sh - uj)
     # ripple: sideways in the body frame, only where the body is free (neck/rise and the hanging tail)
     sj = sh - uj
-    free = ((sj > fp['sN0'] + 2.0) | (sj < (s[fp['nG'] - 1] if fp['nG'] > 0 else -1)))
     Bj = np.cross(Tj, Dj)
-    amp = ripple(t, U_J) * np.where(free, 1.0, 0.25)
+    if hasattr(C, 'ripple_amp'):
+        amp = C.ripple_amp(t, U_J, sj, fp)
+    else:
+        free = ((sj > fp['sN0'] + 2.0) | (sj < (s[fp['nG'] - 1] if fp['nG'] > 0 else -1)))
+        amp = ripple(t, U_J) * np.where(free, 1.0, 0.25)
     X = X + amp[:, None] * Bj
     # chain with exact bone lengths
     J = np.zeros_like(X); J[0] = X[0]
@@ -425,6 +435,8 @@ def solve_frame(t):
     Th = C.sample_vec(T, s, np.array([sh]))[0]; Dh = C.sample_vec(D, s, np.array([sh]))[0]
     Yh = -(J[1] - J[0]); Yh = 0.5 * nrm(Yh) + 0.5 * Th
     Mh = frame_matrix(Yh, Dh, J[0] * K)
+    if hasattr(C, 'head_matrix'):
+        Mh = C.head_matrix(t, Mh, J, T, D, s, sh, K)
     w = look_weight(t)
     if w > 0:
         # forward, slightly down; during the recoil the head lifts into a roar
@@ -494,7 +506,8 @@ def bake(ao):
                 Mp = arm_world[p] if p else np.eye(4)
                 Rp = rest[p] if p else np.eye(4)
                 M = Mp @ (np.linalg.inv(Rp) @ rest[n]) @ basis
-                aim_w = tuck * C.smootherstep(C.T_STRIKE - 0.05, C.T_STRIKE + 0.02, t) * (1 - C.smootherstep(C.T_STRIKE_HIT + 0.08, C.T_STRIKE_HIT + 0.2, t))
+                aim_w = C.arm_aim_weight(t) * tuck if hasattr(C, 'arm_aim_weight') else \
+                    tuck * C.smootherstep(C.T_STRIKE - 0.05, C.T_STRIKE + 0.02, t) * (1 - C.smootherstep(C.T_STRIKE_HIT + 0.08, C.T_STRIKE_HIT + 0.2, t))
                 if aim_w > 0 and n.startswith(('Upperarm', 'Forearm')):
                     # during the whip the spine bends hard behind the shoulders: aim the tucked arm segment
                     # at a point under the belly further down the (bent) spine so it follows the curve
@@ -513,7 +526,7 @@ def bake(ao):
         if fi % 30 == 0: log('frame', fi, 'phase t=%.2f' % t)
     # write keys
     ao.animation_data_create()
-    act = bpy.data.actions.new('DreadSerpent_LegendaryGoal')
+    act = bpy.data.actions.new(OUT_NAME)
     ao.animation_data.action = act
     frames = np.arange(C.NFRAMES, dtype=float)
     for n in order:
@@ -557,9 +570,9 @@ def main():
     log('parts', [(o.name, len(o.data.vertices), sum(len(p.vertices) - 2 for p in o.data.polygons)) for o in objs])
     bake(ao)
     bpy.context.scene.frame_set(0)
-    bpy.ops.wm.save_as_mainfile(filepath=os.path.join(out, 'DreadSerpent_LegendaryGoal.blend'))
+    bpy.ops.wm.save_as_mainfile(filepath=os.path.join(out, OUT_NAME + '.blend'))
     log('saved blend')
-    export_fbx(ao, objs, os.path.join(out, 'DreadSerpent_LegendaryGoal.fbx'))
+    export_fbx(ao, objs, os.path.join(out, OUT_NAME + '.fbx'))
 
 
 def export_fbx(ao, objs, path):

@@ -63,3 +63,35 @@ python preview.py output/DreadSerpent_LegendaryGoal.blend sheet.png 1.0,2.5,3.3 
 python preview_gif.py output/DreadSerpent_LegendaryGoal.blend preview.gif 2 360
 ```
 All choreography constants (timing, coil, stare pose, strike) are in `choreo.py`.
+
+---
+
+# Dread Serpent – Sea Serpent Swim (cinematic)
+
+![preview](output_swim/DreadSerpent_SeaSerpentSwim_preview.gif)
+
+**Deliverable:** `output_swim/DreadSerpent_SeaSerpentSwim.fbx` (13.4 MB, textures embedded, one baked 60 fps clip, 6.0 s / 361 frames). Same rig, meshes and materials as the goal effect; choreography in `choreo_swim.py`.
+
+- **Ground plane (Z = 0) = water surface.** Origin is on the surface at the centre of the swim circle. The serpent circles counter-clockwise (seen from above) at a radius of about 13.5 m, with a sideways S-weave on top. The middle, tallest breach is at the front (−Y).
+- **Scale:** 1 model unit = 10 cm, so the serpent is about 12.5 m long with a 1.3 m head.
+- **Three breach-and-dive arcs** at about 1.0 s, 2.9 s and 4.8 s, peaking 3.4 m, 4.2 m and 3.7 m above the surface. At each peak most of the body, tail included, is in the air. Between breaches the body cruises about 1.5–2.4 m under the surface, with spikes and mane at least about 0.7 m under.
+- **Starts and ends fully submerged** (at least 0.68 m below the surface), so the first and last frames show nothing.
+- **Motion:**
+  - One continuous follow-the-leader centre line: every joint passes through exactly where the head went, so each breach rolls from head to tail.
+  - Momentum: it slows slightly while climbing and surges while diving.
+  - A lateral swim wave travels head → tail and grows toward the tail.
+  - The head looks slightly ahead along the arc.
+  - The jaw parts a little at each crest; the arms paddle gently.
+- **No attacks, no wrapping, no water/VFX.** Splash points are where the body crosses Z = 0. A cheap way to find them in Roblox: raycast the head and tail bones against the ground each frame.
+
+Checks (`SERPENT_CHOREO=choreo_swim python checks.py …`, every frame → `output_swim/checks_report.txt`):
+- body self-intersection: 0 on every frame
+- arm/body contacts: at the rest-pose baseline (≤ 56 touching triangle pairs, the shoulder seam) throughout
+- edge stretch: never more than the jaw corners already show in the rest pose
+- largest per-frame vertex move: steady 2–3 units with no spikes, so no pops
+
+Rebuild:
+```
+SERPENT_CHOREO=choreo_swim python build_dread_serpent.py source/kaido_serpent.fbx source/textures output_swim
+SERPENT_CHOREO=choreo_swim python preview.py output_swim/DreadSerpent_SeaSerpentSwim.blend sheet.png 1,2.9,4.8 swimlow
+```

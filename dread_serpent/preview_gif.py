@@ -3,7 +3,8 @@ import bpy, sys, os, math
 from mathutils import Vector
 from PIL import Image
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import choreo as C
+import importlib
+C = importlib.import_module(os.environ.get('SERPENT_CHOREO', 'choreo'))
 argv = sys.argv[sys.argv.index('--') + 1:] if '--' in sys.argv else sys.argv[1:]
 blend, gif_out = argv[0], argv[1]
 step = int(argv[2]) if len(argv) > 2 else 2
@@ -15,8 +16,9 @@ src = src[:src.index('ims = []')]
 exec(compile(src, 'preview.py', 'exec'))
 sc = bpy.context.scene
 co = sc.camera; co.data.lens = 30
-co.location = (1.1, -4.4, 0.35)
-co.rotation_euler = (Vector((0, 0, -0.85)) - co.location).to_track_quat('-Z', 'Y').to_euler()
+co.location = tuple(float(x) for x in os.environ.get('GIF_LOC', '1.1,-4.4,0.35').split(','))
+tgt = Vector(tuple(float(x) for x in os.environ.get('GIF_TGT', '0,0,-0.85').split(',')))
+co.rotation_euler = (tgt - co.location).to_track_quat('-Z', 'Y').to_euler()
 sc.render.resolution_x = int(res * 1.0); sc.render.resolution_y = int(res * 1.15)
 frames = []
 tmp = os.path.join(os.path.dirname(os.path.abspath(gif_out)), "_gif.png")
