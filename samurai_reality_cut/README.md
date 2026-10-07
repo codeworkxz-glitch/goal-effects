@@ -34,3 +34,6 @@ rig and weights are untouched.
 - Checks: `depthcheck.py` (worst arm-into-body depth 1.3 cm; bind pose itself is 1.1-1.3 cm), `swordclip.py`-style
   sword overlaps are 0, `multiview.py` renders front/side/back/top.
 - FBX 18.9 MB (embedded textures).
+
+## Viewer note
+Embedded-texture FBX showed grey in some viewers, so the delivery is now `Samurai_RealityCut_textured.zip` (FBX + ./textures, relative paths) and `Samurai_RealityCut_colored.fbx` (flat colours + baked vertex colours, no texture files). Built with `export_variants.py`.
