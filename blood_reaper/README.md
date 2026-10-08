@@ -65,7 +65,9 @@
   - `Robe{0–7}_{0–2}`
   - `Trinket_*`
 - **Influences:** at most 4 per vertex.
-- **Triangle count:** about 15k. The largest mesh, the body, is about 9k.
+- **Meshes:** three, one per material: `BloodReaper_Body` (body, wings, robe, trinkets: 11k tris), `Scythe` (3k), `BloodReaper_Eyes`.
+  - The scythe and eyes carry a 0.1 % second influence. Roblox welds meshes bound to a single bone as rigid parts, which then ignore the animation.
+- **Default pose:** the file's default bone transforms are the standing bind pose, so the model imports assembled. The clip runs on frames 1–241.
 - **Materials:**
   - `BloodReaper_Body`: albedo with the alpha mask packed into the PNG's alpha channel, normal map, emission (glowing runes). In Roblox set **AlphaMode = Transparency** (or Overlay) on its SurfaceAppearance so the ragged robe edges cut out.
   - `BloodReaper_Scythe`: albedo and normal.

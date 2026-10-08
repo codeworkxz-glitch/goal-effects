@@ -25,6 +25,11 @@ for m in kids(kids(root, b'Objects')[0], b'Model'):
         if m.props[2] in (b'Mesh', b'Null') and k == b'Lcl Rotation' and np.abs(v).max() > 1e-3: bad.append((name, 'rot', v))
         if k == b'Lcl Scaling' and np.abs(v - 1).max() > 1e-4: bad.append((name, 'scale', v))
 print('non-identity root rotations / any scaling:', bad or 'none')
+for m in kids(kids(root, b'Objects')[0], b'Model'):
+    name = m.props[1].split(b'\x00')[0].decode()
+    if name in ('Pelvis', 'Scythe', 'Hand_L'):
+        pr = {p.props[0].decode(): [round(x, 1) for x in p.props[4:7]] for p in kids(m, b'Properties70')[0].elems if p.props[0] in (b'Lcl Translation', b'Lcl Rotation')}
+        print('  default node', name, pr)
 
 
 def deformed(objs):
@@ -53,12 +58,18 @@ for o in meshes:
     infl = max(sum(1 for g in v.groups if g.weight > 1e-4) for v in o.data.vertices)
     tris = sum(len(p.vertices) - 2 for p in o.data.polygons)
     print(f'  {o.name:18s} tris {tris:5d} max influences {infl}')
-off = int(round(arm.animation_data.action.frame_range[0]))       # importer starts the clip at frame 1
+from mathutils.kdtree import KDTree
+def nn_err(A, B):
+    kd = KDTree(len(B))
+    for i, p in enumerate(B): kd.insert(p, i)
+    kd.balance()
+    return max(kd.find(p)[2] for p in A[::3])
+off = int(round(arm.animation_data.action.frame_range[0]))       # first exported frame = source frame 0
 worst = 0.0
 for f in FRAMES:
     bpy.context.scene.frame_set(f + off); got = deformed(meshes)
-    errs = [np.abs(got[n] - ref[f][n]).max() for n in ref[f] if n in got and got[n].shape == ref[f][n].shape]
-    worst = max(worst, max(errs))
-    allv = np.concatenate(list(got.values()))
-    print(f'frame {f:3d}: max vertex error {max(errs) * 100:.3f} cm   height {allv[:, 2].min():6.2f} .. {allv[:, 2].max():5.2f} m')
+    A = np.concatenate(list(ref[f].values())); B = np.concatenate(list(got.values()))
+    err = max(nn_err(A, B), nn_err(B, A)); worst = max(worst, err)
+    print(f'frame {f:3d}: max vertex error {err * 100:.3f} cm   height {B[:, 2].min():6.2f} .. {B[:, 2].max():5.2f} m')
+# the file's default bone transforms must be the bind pose: imported rest == pose at no animation
 print('OK' if worst < 0.01 and not bad else 'MISMATCH', f'(worst {worst * 100:.3f} cm)')
