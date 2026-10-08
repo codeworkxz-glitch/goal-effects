@@ -264,7 +264,7 @@ def main():
     cloth_W = cl.simulate(frames_W, fps=C.FPS)
     for fi in range(len(extra_W)): extra_W[fi].update(cloth_W[fi])
     S0 = solver.S0
-    ao_extra = [('Scythe', 'Root', S0, 60.0)] + cl.bones()
+    ao_extra = [('Scythe', 'Hand_L', S0, 60.0)] + cl.bones()      # weapon rides on the left hand
     bpy.data.objects.remove(ao)
     for o in list(objs.values()): bpy.data.objects.remove(o)
     ao = build_armature(rig, ao_extra)

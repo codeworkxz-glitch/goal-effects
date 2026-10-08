@@ -9,12 +9,16 @@
 `output/BloodReaper_review.png` is a contact sheet of the attack from three angles.
 
 ## Placement and scale
-- **Origin:** the spot on the floor where the Reaper rises. Z up in Blender (Y up in the FBX). The Reaper faces **-Y**.
+- **Origin:** the spot on the floor where the Reaper rises.
+- **File axes:** **Y up, centimetres**, and the Reaper faces **+Z**. Every node in the file has zero rotation and scale 1: the axis and unit conversion is baked into the vertices, bone rest poses and animation (`export_fbx.py`). Roblox's importer mishandles the rotated, ×100-scaled root nodes that Blender writes by default. With those, the rig came in flipped and the scythe stopped following the animation.
 - **Size:** real world, centimetres in the FBX. The Reaper stands about **4.2 m (≈15 studs)**, roughly 3× a Roblox avatar.
   - Taller with the scythe raised: the blade reaches about 6.1 m at the top of the swing.
   - Footprint: about 6.5 m across, because the sweep reaches about 3.3 m to each side.
   - Leave room around the spawn point.
-- **Roblox import:** import as a rigged model (3D Importer). If your importer asks for the file's units, choose centimetres; if the Reaper comes in at the wrong size, scale it uniformly to 15 studs tall.
+- **Roblox import:**
+  1. **3D Importer** → the FBX. Rig type: custom rig, not R15. Leave the scale alone unless it isn't ~15 studs tall.
+  2. **Animation Editor** → select the imported model → **⋯ → Import → From FBX Animation** → the same FBX → publish → play it with an `AnimationController` + `Animator` on the model.
+  3. Rotate the model 180° about Y if you want it to face the other way: the file has it facing +Z.
 - **Start and end below the floor:** the Reaper is completely below the floor on the first and last frames (top at -0.4 m and -0.8 m), so the floor hides it. In a scene without a floor, hide the model on those frames. The clip is one-shot and does not loop.
 
 ## Timeline (60 fps)
@@ -57,7 +61,7 @@
   - `Root`
   - Biped: `Pelvis`, `Spine1–3`, `Ribcage`, `Neck`, `Head`, `Clavicle_*`, `UpperArm_*`, `Forearm_*`, `Hand_*`, `Finger*_*`
   - `Wing*_*`
-  - `Scythe`
+  - `Scythe`: the weapon bone, parented to `Hand_L`, so the scythe always travels with the hand
   - `Robe{0–7}_{0–2}`
   - `Trinket_*`
 - **Influences:** at most 4 per vertex.
