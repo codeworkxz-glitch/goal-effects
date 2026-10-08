@@ -129,38 +129,42 @@ def build_keys():
     return keys
 
 
-def optimise_all(GR, keys, restarts=4, iters=700, verbose=False, prev=None):
-    total = 0; res = []
-    for k in keys:
-        t, p, d, e = k
-        R_des = C.scythe_rot(np.array(d), np.array(e)); p = np.array(p, float)
-        both = C.scalar_keys(C.GRIP_R_KEYS, t) >= 1.0
-        loose = 1.0 if (t < C.T_GRAB + 0.05 or t > C.T_RAISE + 0.01) else 1.8
-        kk = (t, p, R_des, both, loose)
-        M = np.eye(4); M[:3, :3] = R_des; M[:3, 3] = p; M[2, 3] += C.root_z(t) - C.REST_Z
-        twists = [0.0] if not both else [-20.0, 0.0, 20.0]
-        best = None; best_tw = 0.0; best_ctx = None
-        for tw in twists:
-            W = S.pose(t, S_override=M, twist_extra=tw)[0]
-            ctx = (W, skin_proxy(W))
-            starts = [np.zeros(6)]
-            for seed in range(restarts):
-                rr = np.random.default_rng(seed + 1)
-                starts.append(np.concatenate([rr.normal(0, 0.35, 3), rr.normal(0, 4, 3)]))
-            for x0 in starts:
-                r = minimize(key_cost, x0, args=(kk, GR, ctx), method='Nelder-Mead', options=dict(maxiter=iters, xatol=1e-3, fatol=1e-4))
-                fun = r.fun + (tw / 30.0) ** 2 * 0.6          # prefer the authored twist
-                if best is None or fun < best[0]: best = (fun, r); best_tw = tw; best_ctx = ctx
-        r = best[1]
-        c, dg, R, pp, info = key_cost(r.x, kk, GR, best_ctx, report=True)
-        total += c
-        res.append(dict(t=t, p=pp.tolist(), d=R[:, 0].tolist(), e=R[:, 1].tolist(), cost=c, twist=best_tw))
-        best = r
-        if verbose:
-            print(f't={t:4.2f} tw {best_tw:+4.0f} cost {c:6.2f} dDev {angle(R[:,0], R_des[:,0]):5.1f} eDev {angle(R[:,1], R_des[:,1]):5.1f} '
-                  f'dp {np.linalg.norm(best.x[3:]):4.1f} colS {info["col_s"]:5.2f} colA {info["col_a"]:5.2f} zmin {info["zmin"]:6.1f} ' +
-                  ' | '.join(f'{s}: roll {np.degrees(v["roll"]):+4.0f} cl {v["clamp"]:.1f} wr {v["wrist"]:.0f} sw {v["swing"]:.0f} tw {v["twist"]:.0f} fo {v["fore"]:.0f} elb {v["elbow"]:.0f}' for s, v in dg.items()), flush=True)
-    return total, res
+def optimise_key(args):
+    GR, k, restarts, iters = args
+    t, p, d, e = k
+    R_des = C.scythe_rot(np.array(d), np.array(e)); p = np.array(p, float)
+    both = C.scalar_keys(C.GRIP_R_KEYS, t) >= 1.0
+    loose = 1.0 if (t < C.T_GRAB + 0.05 or t > C.T_RAISE + 0.01) else 1.8
+    kk = (t, p, R_des, both, loose)
+    M = np.eye(4); M[:3, :3] = R_des; M[:3, 3] = p; M[2, 3] += C.root_z(t) - C.REST_Z
+    twists = [0.0] if not both else [-20.0, 0.0, 20.0]
+    best = None; best_tw = 0.0; best_ctx = None
+    for tw in twists:
+        W = S.pose(t, S_override=M, twist_extra=tw)[0]
+        ctx = (W, skin_proxy(W))
+        starts = [np.zeros(6)]
+        for seed in range(restarts):
+            rr = np.random.default_rng(seed + 1)
+            starts.append(np.concatenate([rr.normal(0, 0.35, 3), rr.normal(0, 4, 3)]))
+        for x0 in starts:
+            r = minimize(key_cost, x0, args=(kk, GR, ctx), method='Nelder-Mead', options=dict(maxiter=iters, xatol=1e-3, fatol=1e-4))
+            fun = r.fun + (tw / 30.0) ** 2 * 0.6          # prefer the authored twist
+            if best is None or fun < best[0]: best = (fun, r); best_tw = tw; best_ctx = ctx
+    r = best[1]
+    c, dg, R, pp, info = key_cost(r.x, kk, GR, best_ctx, report=True)
+    line = (f't={t:4.2f} tw {best_tw:+4.0f} cost {c:6.2f} dDev {angle(R[:,0], R_des[:,0]):5.1f} eDev {angle(R[:,1], R_des[:,1]):5.1f} '
+            f'dp {np.linalg.norm(r.x[3:]):4.1f} colS {info["col_s"]:5.2f} colA {info["col_a"]:5.2f} zmin {info["zmin"]:6.1f} ' +
+            ' | '.join(f'{s}: roll {np.degrees(v["roll"]):+4.0f} cl {v["clamp"]:.1f} wr {v["wrist"]:.0f} sw {v["swing"]:.0f} tw {v["twist"]:.0f} fo {v["fore"]:.0f} elb {v["elbow"]:.0f}' for s, v in dg.items()))
+    print(line, flush=True)
+    return dict(t=t, p=pp.tolist(), d=R[:, 0].tolist(), e=R[:, 1].tolist(), cost=c, twist=best_tw)
+
+
+def optimise_all(GR, keys, restarts=4, iters=700, procs=4):
+    """keys are independent: optimise them in parallel"""
+    from multiprocessing import Pool
+    with Pool(procs) as pool:
+        res = pool.map(optimise_key, [(GR, k, restarts, iters) for k in keys], chunksize=1)
+    return sum(r['cost'] for r in res), res
 
 
 def refine(GR, keys_intent, current, iters=500):
@@ -230,7 +234,7 @@ if __name__ == '__main__':
     psi, off = [float(v) for v in os.environ.get('GRIP', '300,-28').split(',')]
     GR = make_GR(np.radians(psi), off)
     keys = build_keys()
-    tot, res = optimise_all(GR, keys, restarts=1, iters=500, verbose=True)
+    tot, res = optimise_all(GR, keys, restarts=1, iters=500)
     print('total', tot)
     json.dump(res, open(os.path.join(HERE, 'work', 'scythe_keys.json'), 'w'), indent=1)
     json.dump(dict(psi=float(np.radians(psi)), off=off, GR=GR.tolist()), open(os.path.join(HERE, 'work', 'grip_r.json'), 'w'), indent=1)
