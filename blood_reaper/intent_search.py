@@ -5,29 +5,30 @@ way the blade faces, how low the blade runs -- and the search picks the scythe p
 that while keeping both hands in reach, the wrists relaxed, and the whole scythe (shaft, pommel and blade) and the
 arms clear of the body and wings (optimize_keys.key_cost).  Keys run in parallel.
 
-    python intent_search.py            -> work/intent_search.json  (paste into choreo_reaper.SCYTHE_KEYS)
+    [ONLY=t,t..] [TWISTS=a,b,..] python intent_search.py   -> work/intent_search.json  (paste into choreo_reaper.SCYTHE_KEYS)
 """
 import json, os, sys, numpy as np
 from multiprocessing import Pool
 from scipy.optimize import minimize
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+TWISTS = [float(v) for v in os.environ.get('TWISTS', '-20,0,20').split(',')]
 
 # t, head yaw (deg, 0 = straight ahead, + = the Reaper's left), yaw sigma, pitch, pitch sigma, blade facing,
-# blade height target (units, None = free)
+# blade height target (units, None = free), left-hand height target (None = free)
 CW = 'cw'      # blade faces the direction of travel of a left -> front -> right sweep
 PLAN = [
-    (2.02, 30, 25, 45, 20, CW, None),
-    (2.14, 70, 20, 25, 20, CW, None),
-    (2.25, 105, 20, 15, 20, CW, None),       # wound up over the left shoulder
-    (2.33, 65, 20, -5, 20, CW, None),
-    (2.40, 5, 20, -25, 25, CW, 12.0),         # low through the front
-    (2.48, -35, 20, -12, 25, CW, 14.0),
-    (2.56, -60, 20, 8, 20, CW, None),         # follow-through to the right
-    (2.70, -40, 25, 40, 20, CW, None),
-    (2.92, 0, 90, 80, 12, (0.0, -1.0, 0.0), None),       # raised overhead, edge forward
-    (3.02, 0, 30, 40, 20, (0.0, -0.7, -0.7), None),       # coming down
-    (3.12, 10, 30, 10, 25, (0.0, 0.0, -1.0), None),       # impact: tip bites into the ground (key_cost target)
+    (2.02, 30, 25, 45, 20, CW, None, None),
+    (2.14, 70, 20, 25, 20, CW, None, None),
+    (2.25, 105, 20, 15, 20, CW, None, None),       # wound up over the left shoulder
+    (2.33, 65, 20, -5, 20, CW, None, None),
+    (2.40, 0, 20, -10, 25, CW, None, None),         # through the front
+    (2.48, -30, 20, -5, 25, CW, None, None),
+    (2.56, -60, 20, 8, 20, CW, None, None),         # follow-through to the right
+    (2.70, -40, 25, 40, 20, CW, None, None),
+    (2.92, 0, 90, 80, 12, (0.0, -1.0, 0.0), None, 100.0),      # raised overhead, edge forward
+    (3.02, 0, 30, 40, 20, (0.0, -0.7, -0.7), None, 88.0),       # coming down
+    (3.12, 10, 30, 10, 25, (0.0, 0.0, -1.0), None, None),       # impact: tip bites into the ground (key_cost target)
 ]
 
 
@@ -45,11 +46,11 @@ def dirs(yaw, pitch, beta, face):
 def search(plan):
     sys.path.insert(0, HERE)
     import optimize_keys as O, choreo_reaper as C
-    t, yaw0, ysig, pit0, psig, face, zt = plan
+    t, yaw0, ysig, pit0, psig, face, zt, hz = plan
     GR = O.make_GR(np.radians(300), -28)
     both = C.scalar_keys(C.GRIP_R_KEYS, t) >= 1.0
     best = None
-    for tw in (-20.0, 0.0, 20.0):
+    for tw in TWISTS:
         # body (torso + wings) proxy does not depend on the scythe; arms are re-solved inside key_cost
         d0, e0 = dirs(yaw0, pit0, 0, face)
         M = np.eye(4); M[:3, :3] = C.scythe_rot(d0, e0); M[:3, 3] = (0, -25, 78); M[2, 3] += C.root_z(t) - C.REST_Z
@@ -64,10 +65,11 @@ def search(plan):
             c += ((yaw - yaw0) / ysig) ** 2 + ((pitch - pit0) / psig) ** 2 + (beta / 25.0) ** 2
             c += max(0.0, abs(pitch) - 85) ** 2
             if zt is not None: c += ((info['zmin'] - zt) / 8.0) ** 2
+            if hz is not None: c += ((p[2] - hz) / 6.0) ** 2
             c += (tw / 30.0) ** 2 * 0.6
             return (c, dg, info, d, e) if report else c
 
-        for p0 in ((0, -25, 75), (12, -20, 80), (-12, -20, 80), (0, -32, 90)):
+        for p0 in ((0, -25, 75), (12, -20, 80), (-12, -20, 80), (0, -32, 90) if hz is None else (0, -25, hz)):
             x0 = np.array([yaw0, pit0, 0.0, *p0], float)
             r = minimize(f, x0, method='Nelder-Mead',
                          options=dict(maxiter=450, xatol=0.05, fatol=1e-3, initial_simplex=x0 + np.vstack([np.zeros(6), np.diag([15, 12, 15, 6, 6, 6])])))
