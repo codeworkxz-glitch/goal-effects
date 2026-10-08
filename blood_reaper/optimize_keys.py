@@ -33,7 +33,12 @@ for mn in ['cadnav_trans_offset', 'Object002_trans_offset', 'Object003_trans_off
     V0 = D['V_' + mn][RR.BIND].astype(float) - rig.off
     tris = TOPO['tri_' + mn]; tc = TOPO['tcls_' + mn]
     keep = np.isin(tc, [1, 4])                 # torso + wings (arms and hands are not obstacles here)
-    PROXY.append((V0, WT['idx_' + mn], WT['w_' + mn], tris[keep]))
+    idx, w = WT['idx_' + mn], WT['w_' + mn]
+    if mn in ('Object002_trans_offset', 'Object004_trans_offset'):
+        # robe skirt / hip pouch ride on cloth / pendulum bones in the build; their cache fit is poor (it drags
+        # some of them along with the hand), so follow the pelvis here
+        idx = np.zeros_like(idx); idx[:, 0] = rig.idx['Pelvis']; w = np.zeros_like(w); w[:, 0] = 1.0
+    PROXY.append((V0, idx, w, tris[keep]))
 
 # ---- scythe samples in the scythe (S0) frame: shaft axis + blade vertices
 c_ax, d_ax = S.S0_axis

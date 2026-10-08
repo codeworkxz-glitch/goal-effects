@@ -50,31 +50,39 @@ def search(plan):
     GR = O.make_GR(np.radians(300), -28)
     both = C.scalar_keys(C.GRIP_R_KEYS, t) >= 1.0
     best = None
-    for tw in TWISTS:
-        # body (torso + wings) proxy does not depend on the scythe; arms are re-solved inside key_cost
-        d0, e0 = dirs(yaw0, pit0, 0, face)
-        M = np.eye(4); M[:3, :3] = C.scythe_rot(d0, e0); M[:3, 3] = (0, -25, 78); M[2, 3] += C.root_z(t) - C.REST_Z
+    def context(tw, x):
+        # body (torso + wings) proxy for the arms solved for scythe pose x (some torso-classed costume
+        # triangles follow the arms); arms themselves are re-solved inside key_cost
+        d0, e0 = dirs(x[0], x[1], x[2], face)
+        M = np.eye(4); M[:3, :3] = C.scythe_rot(d0, e0); M[:3, 3] = x[3:]; M[2, 3] += C.root_z(t) - C.REST_Z
         W = O.S.pose(t, S_override=M, twist_extra=tw)[0]
-        ctx = (W, O.skin_proxy(W))
+        return (W, O.skin_proxy(W))
 
-        def f(x, report=False):
-            yaw, pitch, beta = x[:3]; p = x[3:]
-            d, e = dirs(yaw, pitch, beta, face)
-            R = C.scythe_rot(d, e)
-            c, dg, _, _, info = O.key_cost(np.zeros(6), (t, p, R, both, 1.8), GR, ctx, report=True)
-            c += ((yaw - yaw0) / ysig) ** 2 + ((pitch - pit0) / psig) ** 2 + (beta / 25.0) ** 2
-            c += max(0.0, abs(pitch) - 85) ** 2
-            if zt is not None: c += ((info['zmin'] - zt) / 8.0) ** 2
-            if hz is not None: c += ((p[2] - hz) / 6.0) ** 2
-            c += (tw / 30.0) ** 2 * 0.6
-            return (c, dg, info, d, e) if report else c
+    def cost(x, ctx, tw, report=False):
+        yaw, pitch, beta = x[:3]; p = x[3:]
+        d, e = dirs(yaw, pitch, beta, face)
+        R = C.scythe_rot(d, e)
+        c, dg, _, _, info = O.key_cost(np.zeros(6), (t, p, R, both, 1.8), GR, ctx, report=True)
+        c += ((yaw - yaw0) / ysig) ** 2 + ((pitch - pit0) / psig) ** 2 + (beta / 25.0) ** 2
+        c += max(0.0, abs(pitch) - 85) ** 2
+        if zt is not None: c += ((info['zmin'] - zt) / 8.0) ** 2
+        if hz is not None: c += ((p[2] - hz) / 6.0) ** 2
+        c += (tw / 30.0) ** 2 * 0.6
+        return (c, dg, info, d, e) if report else c
 
+    for tw in TWISTS:
         for p0 in ((0, -25, 75), (12, -20, 80), (-12, -20, 80), (0, -32, 90) if hz is None else (0, -25, hz)):
-            x0 = np.array([yaw0, pit0, 0.0, *p0], float)
-            r = minimize(f, x0, method='Nelder-Mead',
-                         options=dict(maxiter=450, xatol=0.05, fatol=1e-3, initial_simplex=x0 + np.vstack([np.zeros(6), np.diag([15, 12, 15, 6, 6, 6])])))
-            if best is None or r.fun < best[0]:
-                best = (r.fun, r.x, tw, f(r.x, report=True))
+            x = np.array([yaw0, pit0, 0.0, *p0], float)
+            for it in range(3):          # re-pose the body around the current solution, then refine
+                ctx = context(tw, x)
+                r = minimize(cost, x, args=(ctx, tw), method='Nelder-Mead',
+                             options=dict(maxiter=300 if it == 0 else 150, xatol=0.05, fatol=1e-3,
+                                          initial_simplex=x + np.vstack([np.zeros(6), np.diag([15, 12, 15, 6, 6, 6]) / (1 + 2 * it)])))
+                x = r.x
+            ctx = context(tw, x)
+            fx = cost(x, ctx, tw)
+            if best is None or fx < best[0]:
+                best = (fx, x, tw, cost(x, ctx, tw, report=True))
     fun, x, tw, (c, dg, info, d, e) = best
     line = (f't={t:.2f} cost {fun:6.2f} tw {tw:+.0f} yaw {x[0]:6.1f} pitch {x[1]:5.1f} beta {x[2]:5.1f} p {np.round(x[3:], 1).tolist()} '
             f'colS {info["col_s"]:.2f} colA {info["col_a"]:.2f} zmin {info["zmin"]:.1f} ' +
