@@ -26,7 +26,7 @@ PLAN = [
     (2.48, -30, 20, -5, 25, CW, None, None),
     (2.56, -60, 20, 8, 20, CW, None, None),         # follow-through to the right
     (2.70, -40, 25, 40, 20, CW, None, None),
-    (2.92, 0, 90, 80, 12, (0.0, -1.0, 0.0), None, 100.0),      # raised overhead, edge forward
+    (2.92, 180, 30, 50, 15, (0.0, -1.0, 0.0), None, 100.0),    # raised overhead, head back over the shoulders
     (3.02, 0, 30, 40, 20, (0.0, -0.7, -0.7), None, 88.0),       # coming down
     (3.12, 10, 30, 10, 25, (0.0, 0.0, -1.0), None, None),       # impact: tip bites into the ground (key_cost target)
 ]
