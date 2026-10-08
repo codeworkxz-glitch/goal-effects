@@ -165,6 +165,7 @@ def skin(ao, me, name, idx, w, bone_names, parent_obj):
     bpy.context.scene.collection.objects.link(o)
     o.parent = ao
     md = o.modifiers.new('Armature', 'ARMATURE'); md.object = ao
+    o.vertex_groups.clear()          # weights live on the mesh: drop any left from an earlier skin of it
     groups = {}
     for v in range(len(me.vertices)):
         for k in range(idx.shape[1]):
@@ -272,6 +273,7 @@ def main():
         if mname.startswith('Object001'):
             o = bpy.data.objects.new('Scythe', me); bpy.context.scene.collection.objects.link(o); o.parent = ao
             md = o.modifiers.new('Armature', 'ARMATURE'); md.object = ao
+            o.vertex_groups.clear()
             g = o.vertex_groups.new(name='Scythe'); g.add(list(range(len(me.vertices))), 1.0, 'REPLACE')
             objs[mname] = o
         elif mname == 'Object002_trans_offset':
@@ -280,6 +282,7 @@ def main():
             bn = CL.TRINKETS[mname]
             o = bpy.data.objects.new(bn, me); bpy.context.scene.collection.objects.link(o); o.parent = ao
             md = o.modifiers.new('Armature', 'ARMATURE'); md.object = ao
+            o.vertex_groups.clear()
             g = o.vertex_groups.new(name=bn); g.add(list(range(len(me.vertices))), 1.0, 'REPLACE')
             objs[mname] = o
         else:
